@@ -36,7 +36,8 @@ This tool is designed to run in a local Python environment.
     pip install -r requirements.txt
     pip install git+https://github.com/ucam-eo/geotessera.git
     ```
-
+    For jupyter lab, also run `python -m ipykernel install --user --name=tessera` to register the kernel
+    
 ## How to Run
 
 1.  **Open the Project**:
