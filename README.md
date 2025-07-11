@@ -40,7 +40,7 @@ This tool is designed to run in a local Python environment.
 ## How to Run
 
 1.  **Open the Project**:
-    Open the cloned repository folder in VS Code or Jupyter Server.
+    Open the cloned repository folder in VS Code or Jupyter Notebook, or whatever else that runs ipynb files.
 
 2.  **Open the Notebook**:
     Using the file browser on the left, find and open the main notebook file.
