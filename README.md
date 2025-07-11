@@ -50,8 +50,8 @@ This tool is designed to run in a local Python environment.
     The notebook is organized into sequential steps. Run each cell in order from top to bottom.
 
     -   **Step 1: Setup**: Defines the Region of Interest (ROI) by setting latitude/longitude boundaries.
-    -   **Step 2: Data Fetching & Visualization**: Downloads the required Tessera embedding tiles for your ROI, stitches them together, and uses PCA to generate the `temp_vis.png` false-color image. This step may take a few minutes depending on the size of the ROI and your internet connection.
-    -   **Step 3: Interactive UI**: This is the main control panel. It displays the map, the embedding overlay, and all the interactive widgets.
+    -   **Step 2: Data Fetching & Visualization**: Downloads the required Tessera embedding tiles for your ROI, stitches them together, and uses PCA to generate the false color image. This step may take a while.
+    -   **Step 3: Interactive UI**: This is the main interface. It displays the map, the embedding overlay, and all the widgets.
     -   **Step 4: Classification Logic**: This cell defines the function that is triggered when you click the "Classify" button. **You only need to run this cell once** to define the function.
 
     Note: run all four stages, it's necessary to run step 4 for the classification to work even if the map appears at stage 3.
