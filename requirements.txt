@@ -3,4 +3,5 @@ matplotlib
 scikit-learn
 ipyleaflet
 ipywidgets
+ipykernel
 jupyter
