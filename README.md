@@ -19,7 +19,7 @@ This tool is designed to run in a local Python environment.
 
 1.  **Clone the Repository**:
     ```bash
-    git clone https://github.com/rbnyng/tessera-webapp.git
+    git clone https://github.com/ucam-eo/tessera-interactive-map.git
     cd tessera-webapp
     ```
 
