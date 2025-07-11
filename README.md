@@ -20,7 +20,7 @@ This tool is designed to run in a local Python environment.
 1.  **Clone the Repository**:
     ```bash
     git clone https://github.com/ucam-eo/tessera-interactive-map.git
-    cd tessera-webapp
+    cd tessera-interactive-map
     ```
 
 2.  **Create and Activate a Virtual Environment**:
