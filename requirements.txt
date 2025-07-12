@@ -4,3 +4,4 @@ scikit-learn
 ipyleaflet
 ipywidgets
 ipykernel
+rasterio

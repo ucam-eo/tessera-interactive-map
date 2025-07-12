@@ -58,11 +58,71 @@ This tool is designed to run in a local Python environment.
     
 ## How to Use the Tool
 
-Once the UI in Step 3 is displayed, you can begin your analysis:
+### 1. Launch the Notebook
 
-1.  **Explore**: Use the **Basemap** dropdown and the **Opacity** slider to compare the embedding visualization with the underlying satellite/street map.
-2.  **Define Classes**: Use the **Class** dropdown to select a land cover type. You can add new classes by typing in the "New Class" box and clicking "Add". Customize the color for the selected class using the **Set Color** picker.
-3.  **Add Pins**: Click on the map to label features. A colored pin will appear, corresponding to the currently selected class and color.
-4.  **Classify**: Once you have labeled a few points for at least two different classes, zoom into an area you're interested in and click the **Classify** button. The tool will train a model on your pins and display a colored classification map over the current viewport.
-5.  **Refine**: If the classification is incorrect, add more pins to the misclassified areas (or add pins for a new class you missed) and click "Classify" again. The result will update based on your new training data.
-6.  **Clear**: Use the "Clear All Pins" and "Clear Classification" buttons to reset your work.
+Once the notebook opens, you're ready to begin.
+
+![Notebook Opened](img/step1.png)
+
+---
+
+### 2. Set the Region of Interest
+
+Use a tool like [BBox Finder](http://bboxfinder.com) to get coordinates and define your bounding box.
+
+![Set Region](img/step2.png)
+
+---
+
+### 3. Run All Cells
+
+Click `Run All` to execute all the cells in the notebook. This may take a couple of minutes.
+
+![Run All Cells](img/step3.png)
+
+![Wait for it](img/step3-2.png)
+
+---
+
+### 4. Wait for the Map to Load
+
+Once processing completes, a map will appear in the notebook.
+
+![Map Loaded](img/step4.png)
+
+---
+
+### 5. Select or Add a Class
+
+Use the class selector to pick an existing class or create a new one.
+You can customize the color using the color palette.
+
+![Select Class](img/step5.png)
+![Add Class](img/step5-2.png)
+
+---
+
+### 6. Label the Map
+
+Click directly on the map to place pins for each class.
+Clicking a pin again will remove it.
+
+![Add Pins](img/step6.png)
+
+---
+
+### 7. Start Classification
+
+Once you’ve added pins from **at least two classes**, click the **Classify** button to begin the classification.
+
+![Start Classification](img/step7.png)
+![Wait for Classification](img/step7-2.png)
+
+---
+
+### 8. View the Classification Map
+
+After processing, a classification map based on your input will appear.
+
+![Classification Result](img/step8.png)
+
