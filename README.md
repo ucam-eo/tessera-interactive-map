@@ -22,14 +22,15 @@ This tool is designed to run in a local Python environment.
     git clone https://github.com/ucam-eo/tessera-interactive-map.git
     cd tessera-interactive-map
     ```
-
-2.  **Create and Activate a Virtual Environment**:
+    (workshop participants, skip the next steps, environment management has been done for you; go directly to running the notebook)
+    
+3.  **Create and Activate a Virtual Environment**:
     ```bash
     python -m venv venv
     source venv/bin/activate
     ```
 
-3.  **Install Dependencies**:
+4.  **Install Dependencies**:
     The required packages are listed in `requirements.txt`. Additionally, you need to install the `geotessera` library directly from its Git repository.
 
     ```bash
