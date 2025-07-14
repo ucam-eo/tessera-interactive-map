@@ -15,14 +15,13 @@ The tool allows a user to define an area of interest, visualize the high-dimensi
 
 ## Installation
 
-This tool is designed to run in a local Python environment.
+This tool is designed to run in a local Python environment with git installed.
 
 1.  **Clone the Repository**:
     ```bash
     git clone https://github.com/ucam-eo/tessera-interactive-map.git
     cd tessera-interactive-map
     ```
-    (workshop participants, skip the next steps, environment management has been done for you; go directly to running the notebook)
     
 3.  **Create and Activate a Virtual Environment**:
     ```bash
