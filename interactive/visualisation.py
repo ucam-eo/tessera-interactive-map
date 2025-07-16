@@ -6,7 +6,14 @@ from functools import partial
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
-from ipyleaflet import CircleMarker, ImageOverlay, Map, TileLayer
+from ipyleaflet import (
+    CircleMarker,
+    DrawControl,
+    ImageOverlay,
+    Map,
+    Rectangle,
+    TileLayer,
+)
 from IPython.display import display
 from ipywidgets import (
     HTML,
@@ -822,3 +829,197 @@ class InteractiveMappingTool:
         with self.output_log:
             print("Updated embedding visualization overlay")
             print(f"Bounds: ({south:.4f}, {west:.4f}) to ({north:.4f}, {east:.4f})")
+
+
+class BoundingBoxSelector:
+    """Interactive bounding box selector using ipyleaflet map."""
+
+    def __init__(self):
+        """Initialize the bounding box selector with a world map."""
+        self.bbox_coords = None
+        self.selected_rectangle = None
+        self.status = None
+        self.visual_rectangle = None  # track the visual rectangle layer manually (separate from the draw control)
+
+        # create world map
+        self.map = Map(
+            center=(20, 0),  # center on world view
+            zoom=2,
+            layout={"width": "100%", "height": "500px"},
+        )
+
+        # create draw control for rectangles alone with improved settings
+        self.draw_control = DrawControl(
+            rectangle={
+                "shapeOptions": {
+                    "color": "#ff0000",
+                    "weight": 2,
+                    "fillOpacity": 0.2,
+                    "fillColor": "#ff0000",
+                }
+            },
+            polygon={},  # disable polygon
+            polyline={},  # disable polyline
+            circle={},  # disable circle
+            marker={},  # disable marker
+            circlemarker={},  # disable circle marker
+            edit=False,  # disable editing to avoid confusion
+            remove=False,  # disable manual removal since we handle it automatically
+        )
+
+        # add draw control to map
+        self.map.add_control(self.draw_control)
+
+        # set up event handlers
+        self.draw_control.on_draw(self._on_draw)
+
+        # create output widgets
+        self.info_widget = HTML(
+            value="<b>Instructions:</b> Draw a rectangle on the map to select your bounding box."
+        )
+        self.coords_output = Output()
+        # self.get_coords_button = Button(
+        #     description="Get Coordinates", button_style="success"
+        # )
+        # self.get_coords_button.on_click(self._on_get_coords_clicked)
+
+        # create layout
+        self.widget = VBox(
+            [
+                self.info_widget,
+                self.map,
+                #  self.get_coords_button,
+                self.coords_output,
+            ]
+        )
+
+    def _on_draw(
+        self, target: DrawControl, action: str, geo_json: dict, **kwargs
+    ) -> None:
+        """Handle draw events on the map.
+
+        Args:
+            target (DrawControl): the DrawControl object
+            action (str): the action type (e.g., 'created', 'edited', 'deleted')
+            geo_json (dict): the GeoJSON object of the drawn feature
+            **kwargs: additional keyword arguments
+        """
+        # if a rectangle has been created, update the bounding box coordinates
+        if (
+            action == "created"
+            and geo_json
+            and geo_json.get("geometry", {}).get("type") == "Polygon"
+        ):
+            # use the output widget to display debug information in the notebook
+            with self.coords_output:
+                # remove the rectangle from DrawControl immediately to avoid visual issues
+                if geo_json in target.data:
+                    target.data.remove(geo_json)
+
+                # remove previous visual rectangle if it exists
+                if self.visual_rectangle is not None:
+                    self.map.remove_layer(self.visual_rectangle)
+
+                # extract coordinates from the drawn rectangle
+                coords = geo_json["geometry"]["coordinates"][0]
+                lons = [coord[0] for coord in coords]
+                lats = [coord[1] for coord in coords]
+
+                # calculate bounds for Rectangle layer
+                min_lat, max_lat = min(lats), max(lats)
+                min_lon, max_lon = min(lons), max(lons)
+
+                # create a new Rectangle layer for visual display
+                self.visual_rectangle = Rectangle(
+                    bounds=[(min_lat, min_lon), (max_lat, max_lon)],
+                    color="#2f7d31",  # green color for selected rectangle
+                    weight=3,
+                    fill_opacity=0.3,
+                    fill_color="#2f7d31",
+                )
+
+                # add new rectangle to map
+                self.map.add_layer(self.visual_rectangle)
+
+                # store rectangle data and coordinates
+                self.selected_rectangle = geo_json
+                self.bbox_coords = {
+                    "min_lon": min_lon,
+                    "max_lon": max_lon,
+                    "min_lat": min_lat,
+                    "max_lat": max_lat,
+                }
+
+                # mark presence of rectangle in status
+                self.status = "drawn"
+
+                # update info widget with enhanced styling
+                self.info_widget.value = f"""
+                <div style="padding: 10px; background-color: #e8f5e8; border: 1px solid #4CAF50; border-radius: 5px;">
+                    <b style="color: #2E7D32;">✓ Bounding Box Selected</b><br>
+                    <div style="margin-top: 8px; font-family: monospace; font-size: 0.9em;">
+                        <b>Longitude:</b> {self.bbox_coords["min_lon"]:.4f} to {self.bbox_coords["max_lon"]:.4f}<br>
+                        <b>Latitude:</b> {self.bbox_coords["min_lat"]:.4f} to {self.bbox_coords["max_lat"]:.4f}
+                    </div>
+                    <div style="margin-top: 8px; font-size: 0.8em; color: #666;">
+                        <i>Draw a new rectangle to replace this selection</i>
+                    </div>
+                </div>
+                """
+
+    # def _on_get_coords_clicked(self, button: Button) -> None:
+    #     """Handle get coordinates button click with enhanced output formatting."""
+    #     with self.coords_output:
+    #         self.coords_output.clear_output()
+    #         if self.bbox_coords:
+    #             print("🗺️  Selected Bounding Box Coordinates:")
+    #             print("=" * 45)
+    #             print(f"📍 Min Longitude: {self.bbox_coords['min_lon']:.6f}")
+    #             print(f"📍 Max Longitude: {self.bbox_coords['max_lon']:.6f}")
+    #             print(f"📍 Min Latitude:  {self.bbox_coords['min_lat']:.6f}")
+    #             print(f"📍 Max Latitude:  {self.bbox_coords['max_lat']:.6f}")
+    #             print()
+    #             print("📋 Copy-paste ready for tessera:")
+    #             print("-" * 35)
+    #             print(
+    #                 f"MIN_LON, MAX_LON = {self.bbox_coords['min_lon']:.6f}, {self.bbox_coords['max_lon']:.6f}"
+    #             )
+    #             print(
+    #                 f"MIN_LAT, MAX_LAT = {self.bbox_coords['min_lat']:.6f}, {self.bbox_coords['max_lat']:.6f}"
+    #             )
+
+    #             # Calculate approximate area and diagonal distance for reference
+    #             lat_diff = self.bbox_coords["max_lat"] - self.bbox_coords["min_lat"]
+    #             lon_diff = self.bbox_coords["max_lon"] - self.bbox_coords["min_lon"]
+    #             approx_area = lat_diff * lon_diff
+    #             print()
+    #             print(f"📐 Approximate area: {approx_area:.6f} square degrees")
+    #             print(f"📏 Dimensions: {lat_diff:.4f}° lat × {lon_diff:.4f}° lon")
+    #         else:
+    #             print("❌ No bounding box selected.")
+    #             print("Please draw a rectangle on the map first, then try again.")
+
+    def display(self):
+        """Display the bounding box selector widget."""
+        display(self.widget)
+
+    def get_bbox(self):
+        """Get the current bounding box coordinates.
+
+        Returns:
+            tuple: ((min_lat, max_lat), (min_lon, max_lon)) or None if no selection
+        """
+        if self.bbox_coords:
+            return (
+                (self.bbox_coords["min_lat"], self.bbox_coords["max_lat"]),
+                (self.bbox_coords["min_lon"], self.bbox_coords["max_lon"]),
+            )
+        return None
+
+    def get_bbox_dict(self) -> dict | None:
+        """Get the current bounding box coordinates as a dictionary.
+
+        Returns:
+            dict (dict | None): Dictionary with min_lat, max_lat, min_lon, max_lon keys or None
+        """
+        return self.bbox_coords
