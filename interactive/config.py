@@ -1,5 +1,5 @@
 # get repo root
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -18,14 +18,17 @@ class Config:
     All parameters can be modified at runtime or loaded from YAML config file.
     """
 
-    year: int = 2024
-
     # Coordinate Reference System
     target_crs: str = "EPSG:4326"  # WGS84 default
     # source_crs: str = "EPSG:4326"  # WGS84 default
 
-    # Bounding box parameters
+    # Spatial parameters
     min_bbox_size: float = 0.1  # Minimum bounding box size in degrees
+    lat_coords: tuple = field(default_factory=lambda: (52.00, 52.20))
+    lon_coords: tuple = field(default_factory=lambda: (-0.10, 0.30))
+
+    # Temporal
+    target_year: int = 2024
 
     # Output parameters
     # output_format: str = "GeoTIFF"
@@ -34,7 +37,7 @@ class Config:
 
     # Visualisation
     n_samples: int = 100000
-    percentiles: list[float] = [2, 98]
+    percentiles: list[float] = field(default_factory=lambda: [2, 98])
     save_format: str = "png"
 
     def update(self, **kwargs) -> "Config":
