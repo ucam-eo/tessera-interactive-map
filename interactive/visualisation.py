@@ -38,7 +38,7 @@ class InteractiveMappingTool:
         min_lon: float,
         max_lon: float,
         embedding_mosaic: np.ndarray,
-        mosaic_transform: Affine,
+        mosaic_transform,
     ):
         self.training_points = []
         self.markers = {}
