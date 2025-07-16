@@ -25,52 +25,12 @@ from rasterio.transform import array_bounds
 from sklearn.decomposition import PCA
 
 
-def visualise_embedding(embedding_mosaic, mosaic_transform) -> tuple:
-    """
-    Visualise an embedding mosaic using PCA.
-    """
-    mosaic_height, mosaic_width, num_channels = embedding_mosaic.shape
-    # The mosaic is now in EPSG:4326, so its bounds are already in lat/lon
-    west, south, east, north = array_bounds(
-        mosaic_height, mosaic_width, mosaic_transform
-    )
-    VIS_BOUNDS = ((south, west), (north, east))
-
-    # --- PCA VISUALIZATION ---
-    print("\nCreating PCA-based visualization...")
-    pixels = embedding_mosaic.reshape(-1, num_channels)
-    n_sample = min(pixels.shape[0], 100000)
-    sample_indices = np.random.choice(pixels.shape[0], n_sample, replace=False)
-    pca = PCA(n_components=3)
-    pca.fit(pixels[sample_indices, :])
-    transformed_pixels = pca.transform(pixels)
-    pca_image = transformed_pixels.reshape(mosaic_height, mosaic_width, 3)
-    print("Normalizing PCA components for display...")
-    vis_mosaic = np.zeros_like(pca_image)
-    for i in range(3):
-        channel = pca_image[:, :, i]
-        min_val, max_val = np.percentile(channel, [2, 98])
-        if max_val > min_val:
-            vis_mosaic[:, :, i] = np.clip(
-                (channel - min_val) / (max_val - min_val), 0, 1
-            )
-    print("PCA visualization created.")
-
-    buffer = io.BytesIO()
-    plt.imsave(buffer, vis_mosaic, format="png")
-    buffer.seek(0)
-    b64_data = base64.b64encode(buffer.read()).decode("utf-8")
-    VIS_DATA_URL = f"data:image/png;base64,{b64_data}"
-    return VIS_BOUNDS, VIS_DATA_URL
-
-
-# -- 3. MAPPING TOOL --
-
-
 class InteractiveMappingTool:
     """Interactive mapping tool for labeling training points on satellite imagery."""
 
-    def __init__(self, min_lat, max_lat, min_lon, max_lon, vis_data_url, vis_bounds):
+    def __init__(
+        self, min_lat, max_lat, min_lon, max_lon, embedding_mosaic, mosaic_transform
+    ):
         self.training_points = []
         self.markers = {}
         self.A_MARKER_WAS_JUST_REMOVED = False
@@ -78,16 +38,20 @@ class InteractiveMappingTool:
         self.tab10_cmap = plt.colormaps.get_cmap("tab10")
         self.classification_layer = None
 
+        # arguments
         self.min_lat = min_lat
         self.max_lat = max_lat
         self.min_lon = min_lon
         self.max_lon = max_lon
-        self.vis_data_url = vis_data_url
-        self.vis_bounds = vis_bounds
+        self.embedding_mosaic = embedding_mosaic
+        self.mosaic_transform = mosaic_transform
 
         # initialize the tool
         self._setup_initial_classes()
         self._create_widgets()
+        self.vis_bounds, self.vis_data_url = self.visualise_embedding(
+            self.embedding_mosaic, self.mosaic_transform
+        )
         self._create_map()
         self._setup_event_handlers()
         self._create_layout()
@@ -185,9 +149,11 @@ class InteractiveMappingTool:
         self.image_overlay = ImageOverlay(
             url=self.vis_data_url,
             bounds=self.vis_bounds,
-            opacity=self.opacity_slider.value if self.opacity_toggle.value else 0,
+            opacity=self.opacity_slider.value if self.opacity_toggle.value else 0.7,
         )
         self.m.add(self.image_overlay)
+
+        print("Image overlay added to map")
 
     def update_legend(self):
         if not self.class_color_map:
@@ -373,8 +339,129 @@ class InteractiveMappingTool:
                 self.output_log.clear_output()
                 print("Classification layer removed.")
 
+    def on_classify_button_clicked(self, b):
+        """Perform k-nearest neighbors classification and display results."""
+        if len(self.training_points) < 2:
+            with self.output_log:
+                self.output_log.clear_output()
+                print("Error: Need at least 2 training points to classify.")
+            return
+
+        # Check if we have training points for at least 2 classes
+        unique_classes = set(class_name for _, class_name in self.training_points)
+        if len(unique_classes) < 2:
+            with self.output_log:
+                self.output_log.clear_output()
+                print("Error: Need training points for at least 2 different classes.")
+            return
+
+        try:
+            with self.output_log:
+                self.output_log.clear_output()
+                print("Starting classification...")
+
+            # Create feature matrix and labels from training points
+            import numpy as np
+            from sklearn.neighbors import KNeighborsClassifier
+
+            # Extract features and labels
+            training_coords = np.array([point for point, _ in self.training_points])
+            training_labels = [class_name for _, class_name in self.training_points]
+
+            # Create simple k-NN classifier
+            n_neighbors = min(3, len(self.training_points))
+            knn = KNeighborsClassifier(n_neighbors=n_neighbors)
+            knn.fit(training_coords, training_labels)
+
+            # Create a grid for classification
+            lat_range = np.linspace(self.min_lat, self.max_lat, 100)
+            lon_range = np.linspace(self.min_lon, self.max_lon, 100)
+            lat_grid, lon_grid = np.meshgrid(lat_range, lon_range)
+            grid_points = np.column_stack([lat_grid.ravel(), lon_grid.ravel()])
+
+            # Predict classes for grid points
+            predictions = knn.predict(grid_points)
+
+            # Create classification visualization
+            import base64
+            import io
+
+            import matplotlib.pyplot as plt
+
+            # Create color map for classes
+            unique_predictions = np.unique(predictions)
+            colors = [
+                self.class_color_map.get(cls, "#888888") for cls in unique_predictions
+            ]
+
+            # Create classification image
+            fig, ax = plt.subplots(figsize=(10, 8))
+            ax.set_xlim(self.min_lon, self.max_lon)
+            ax.set_ylim(self.min_lat, self.max_lat)
+
+            # Plot classification regions
+            for i, class_name in enumerate(unique_predictions):
+                mask = predictions == class_name
+                if np.any(mask):
+                    class_points = grid_points[mask]
+                    ax.scatter(
+                        class_points[:, 1],
+                        class_points[:, 0],
+                        c=self.class_color_map.get(class_name, "#888888"),
+                        alpha=0.3,
+                        s=1,
+                    )
+
+            ax.set_xlabel("Longitude")
+            ax.set_ylabel("Latitude")
+            ax.set_title("Classification Results")
+
+            # Save to base64 for overlay
+            buffer = io.BytesIO()
+            plt.savefig(
+                buffer,
+                format="png",
+                bbox_inches="tight",
+                dpi=150,
+                facecolor="none",
+                edgecolor="none",
+                transparent=True,
+            )
+            buffer.seek(0)
+            plt.close(fig)
+
+            b64_data = base64.b64encode(buffer.read()).decode("utf-8")
+            classification_url = f"data:image/png;base64,{b64_data}"
+
+            # Remove existing classification layer if present
+            if self.classification_layer and self.classification_layer in self.m.layers:
+                self.m.remove_layer(self.classification_layer)
+
+            # Add new classification layer
+            classification_bounds = (
+                (self.min_lat, self.min_lon),
+                (self.max_lat, self.max_lon),
+            )
+            self.classification_layer = ImageOverlay(
+                url=classification_url, bounds=classification_bounds, opacity=0.6
+            )
+            self.m.add(self.classification_layer)
+            self.clear_classification_button.disabled = False
+
+            with self.output_log:
+                print(
+                    f"Classification complete! Used {len(self.training_points)} training points."
+                )
+                print(
+                    f"Found {len(unique_predictions)} classes: {', '.join(unique_predictions)}"
+                )
+
+        except Exception as e:
+            with self.output_log:
+                self.output_log.clear_output()
+                print(f"Error during classification: {e}")
+
     def on_save_button_clicked(self, b):
-        # CHANGE: Convert to method, use self attributes
         fname = self.filename_text.value
         if not fname:
             with self.output_log:
@@ -382,7 +469,7 @@ class InteractiveMappingTool:
                 print("Error: Please provide a filename.")
             return
 
-        # Bundle both the points and the color map together for save state
+        # bundle both the points and the color map together for save state
         save_data = {
             "training_points": self.training_points,
             "class_color_map": self.class_color_map,
@@ -402,7 +489,6 @@ class InteractiveMappingTool:
                 print(f"Error saving file: {e}")
 
     def on_load_button_clicked(self, b):
-        # CHANGE: Convert to method, use self attributes
         fname = self.filename_text.value
         if not fname:
             with self.output_log:
@@ -431,11 +517,11 @@ class InteractiveMappingTool:
 
         self.class_color_map.update(loaded_colors)
 
-        # Re draw all markers on the map
+        # re-draw all markers on the map
         for point_data in loaded_points:
             coords, class_name = point_data
 
-            # Add class to dropdown
+            # add class to dropdown
             if class_name not in self.class_dropdown.options:
                 self.class_dropdown.options += (class_name,)
             self.training_points.append(point_data)
@@ -462,7 +548,6 @@ class InteractiveMappingTool:
             )
 
     def _setup_event_handlers(self):
-        # CHANGE: Convert event handler setup to method
         self.opacity_toggle.observe(self.update_opacity, names="value")
         self.opacity_slider.observe(self.update_opacity, names="value")
         self.add_class_button.on_click(self.on_add_class_button_clicked)
@@ -474,9 +559,9 @@ class InteractiveMappingTool:
         self.basemap_selector.observe(self.on_basemap_change, names="value")
         self.save_button.on_click(self.on_save_button_clicked)
         self.load_button.on_click(self.on_load_button_clicked)
+        self.classify_button.on_click(self.on_classify_button_clicked)
 
     def _create_layout(self):
-        # CHANGE: Convert layout creation to method
         class_controls = HBox([self.class_dropdown, self.color_picker])
         new_class_controls = HBox([self.new_class_text, self.add_class_button])
         opacity_controls = HBox([self.opacity_toggle, self.opacity_slider])
@@ -514,11 +599,9 @@ class InteractiveMappingTool:
         self.ui = VBox([top_bar, self.m, buttons, file_controls, self.output_log])
 
     def display(self):
-        # CHANGE: Add method to display the UI and update legend
         display(self.ui)
         self.update_legend()
 
-    # CHANGE: Add method to get training data (useful for external access)
     def get_training_data(self):
         """Return current training points and class colors."""
         return {
@@ -526,7 +609,139 @@ class InteractiveMappingTool:
             "class_color_map": self.class_color_map,
         }
 
+    def _create_pca_visualization(
+        self, embedding_mosaic, n_samples=100000, percentiles=[2, 98]
+    ):
+        """Create PCA-based visualization of embedding mosaic.
 
-# CHANGE: Usage would now be:
-# mapping_tool = InteractiveMappingTool(MIN_LAT, MAX_LAT, MIN_LON, MAX_LON, VIS_DATA_URL, VIS_BOUNDS)
-# mapping_tool.display()
+        Args:
+            embedding_mosaic: Embedding array of shape (H, W, C)
+            n_samples: Number of samples to use for PCA fitting
+            percentiles: Percentiles for normalization
+
+        Returns:
+            vis_mosaic: Normalized RGB visualization array
+        """
+        print("\nCreating PCA-based visualization...")
+        mosaic_height, mosaic_width, num_channels = embedding_mosaic.shape
+
+        # reshape to non-spatial pixels
+        pixels = embedding_mosaic.reshape(-1, num_channels)
+        n_sample = min(pixels.shape[0], n_samples)
+        sample_indices = np.random.choice(pixels.shape[0], n_sample, replace=False)
+
+        # fit PCA
+        pca = PCA(n_components=3)
+        pca.fit(pixels[sample_indices, :])
+        transformed_pixels = pca.transform(pixels)
+        pca_image = transformed_pixels.reshape(mosaic_height, mosaic_width, 3)
+
+        # normalize for display
+        print("Normalizing PCA components for display...")
+        vis_mosaic = self._normalize_pca_channels(pca_image, percentiles)
+        print("PCA visualization created.")
+
+        return vis_mosaic
+
+    def _normalize_pca_channels(self, pca_image, percentiles=[2, 98]):
+        """Normalize PCA channels for display.
+
+        Args:
+            pca_image: PCA-transformed image array
+            percentiles: Percentiles for clipping
+
+        Returns:
+            vis_mosaic: Normalized visualization array
+        """
+        vis_mosaic = np.zeros_like(pca_image)
+        for i in range(3):
+            channel = pca_image[:, :, i]
+            min_val, max_val = np.percentile(channel, percentiles)
+            if max_val > min_val:
+                vis_mosaic[:, :, i] = np.clip(
+                    (channel - min_val) / (max_val - min_val), 0, 1
+                )
+        return vis_mosaic
+
+    def _create_base64_image(self, vis_mosaic):
+        """Convert visualization array to base64 data URL.
+
+        Args:
+            vis_mosaic: Normalized visualization array
+
+        Returns:
+            str: Base64 data URL for the image
+        """
+        buffer = io.BytesIO()
+        plt.imsave(buffer, vis_mosaic, format="png")
+        buffer.seek(0)
+        b64_data = base64.b64encode(buffer.read()).decode("utf-8")
+        return f"data:image/png;base64,{b64_data}"
+
+    def visualise_embedding(
+        self, embedding_mosaic, mosaic_transform, n_samples=100000, percentiles=[2, 98]
+    ) -> tuple:
+        """
+        Visualise an embedding mosaic using PCA.
+
+        Args:
+            embedding_mosaic: Embedding array of shape (H, W, C)
+            mosaic_transform: Rasterio transform for the mosaic
+            n_samples: Number of samples to use for PCA fitting
+            percentiles: Percentiles for normalization
+
+        Returns:
+            tuple: (VIS_BOUNDS, VIS_DATA_URL) for map overlay
+        """
+        mosaic_height, mosaic_width, num_channels = embedding_mosaic.shape
+
+        # calculate bounds - mosaic is in EPSG:4326, so bounds are already in lat/lon
+        west, south, east, north = array_bounds(
+            mosaic_height, mosaic_width, mosaic_transform
+        )
+        vis_bounds = ((south, west), (north, east))
+        print(f"Calculated bounds: {vis_bounds}")
+
+        # create PCA visualization
+        vis_mosaic = self._create_pca_visualization(
+            embedding_mosaic, n_samples, percentiles
+        )
+
+        # convert to base64 data URL for map overlay
+        vis_data_url = self._create_base64_image(vis_mosaic)
+
+        return vis_bounds, vis_data_url
+
+    def update_embedding_overlay(
+        self, embedding_mosaic, mosaic_transform, n_samples=100000, percentiles=[2, 98]
+    ):
+        """Update the map with a new embedding visualization overlay.
+
+        Args:
+            embedding_mosaic: Embedding array of shape (H, W, C)
+            mosaic_transform: Rasterio transform for the mosaic
+            n_samples: Number of samples to use for PCA fitting
+            percentiles: Percentiles for normalization
+        """
+        # Create visualization
+        vis_bounds, vis_data_url = self.visualise_embedding(
+            embedding_mosaic, mosaic_transform, n_samples, percentiles
+        )
+
+        # Update the image overlay
+        self.image_overlay.url = vis_data_url
+        self.image_overlay.bounds = vis_bounds
+
+        # Update bounds for classification if needed
+        self.vis_bounds = vis_bounds
+        self.vis_data_url = vis_data_url
+
+        # Update bounding box for classification grid
+        south, west = vis_bounds[0]
+        north, east = vis_bounds[1]
+        self.min_lat, self.max_lat = south, north
+        self.min_lon, self.max_lon = west, east
+
+        with self.output_log:
+            print("Updated embedding visualization overlay")
+            print(f"Bounds: ({south:.4f}, {west:.4f}) to ({north:.4f}, {east:.4f})")
