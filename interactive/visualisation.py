@@ -7,7 +7,7 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 from ipyleaflet import CircleMarker, ImageOverlay, Map, TileLayer
-from IPython.display import display
+from IPython.display import display, Javascript
 from ipywidgets import (
     HTML,
     Button,
@@ -126,6 +126,7 @@ class InteractiveMappingTool:
         )
         self.save_button = Button(description="Save Labels", button_style="success")
         self.load_button = Button(description="Load Labels", button_style="primary")
+        self.fullscreen_button = Button(description="Fullscreen", icon="expand", tooltip="Toggle Fullscreen View")
         self.output_log = Output()
 
         self.legend_widget = HTML(
@@ -602,6 +603,19 @@ class InteractiveMappingTool:
                 f"Successfully loaded {len(self.training_points)} points from {fname}"
             )
 
+    def on_fullscreen_button_clicked(self, b: dict) -> None:
+        """Toggles fullscreen mode for the entire UI container using JavaScript."""
+
+        script = f"""
+            const elem = document.querySelector("div[data-model-id='{self.ui.model_id}']");
+            if (elem && !document.fullscreenElement) {{
+                elem.requestFullscreen();
+            }} else if (document.fullscreenElement) {{
+                document.exitFullscreen();
+            }}
+        """
+        display(Javascript(script))
+
     def _setup_event_handlers(self):
         """Setup event handlers for all UI widgets."""
         self.opacity_toggle.observe(self.update_opacity, names="value")
@@ -616,6 +630,7 @@ class InteractiveMappingTool:
         self.save_button.on_click(self.on_save_button_clicked)
         self.load_button.on_click(self.on_load_button_clicked)
         self.classify_button.on_click(self.on_classify_button_clicked)
+        self.fullscreen_button.on_click(self.on_fullscreen_button_clicked) 
 
     def _create_layout(self):
         """Create the layout for the interactive mapping tool."""
@@ -650,6 +665,7 @@ class InteractiveMappingTool:
                 self.classify_button,
                 self.clear_pins_button,
                 self.clear_classification_button,
+                self.fullscreen_button,
             ]
         )
         file_controls = HBox([self.filename_text, self.save_button, self.load_button])
