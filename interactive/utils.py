@@ -6,6 +6,7 @@ import rasterio
 
 # geospatial
 from geotessera import GeoTessera
+from rasterio import Affine
 from rasterio.enums import Resampling
 from rasterio.io import MemoryFile
 from rasterio.merge import merge
@@ -13,7 +14,7 @@ from rasterio.warp import calculate_default_transform, reproject
 from tqdm.auto import tqdm
 
 # custom
-from .config import config  # Import the global config instance
+from .config import Config, config  # import the global config instance
 
 TESSERA = GeoTessera()
 
@@ -22,17 +23,17 @@ def define_roi(
     lat_coords: Optional[tuple] = None,
     lon_coords: Optional[tuple] = None,
     min_bbox_size: Optional[float] = None,
-):
+) -> tuple[tuple[float, float], tuple[float, float]]:
     """
     Define region of interest using config defaults or user-provided values.
 
     Args:
-        lat_coords: Tuple of latitude coordinates (min, max). Uses config default if None.
-        lon_coords: Tuple of longitude coordinates (min, max). Uses config default if None.
-        min_bbox_size: Minimum bounding box size. Uses config default if None.
+        lat_coords (tuple): Tuple of latitude coordinates (min, max). Uses config default if None.
+        lon_coords (tuple): Tuple of longitude coordinates (min, max). Uses config default if None.
+        min_bbox_size (float): Minimum bounding box size. Uses config default if None.
 
     Returns:
-        Tuple of validated (lat_coords, lon_coords)
+        tuple[tuple[float, float], tuple[float, float]]: Tuple of validated (lat_coords, lon_coords)
     """
     if (
         lat_coords is None
@@ -59,16 +60,19 @@ def define_roi(
 
 def check_bbox(
     lat_coords: tuple, lon_coords: tuple, min_bbox_size: Optional[float] = None
-):
+) -> tuple[tuple[float, float], tuple[float, float]]:
     """
     Define a bounding box from two coordinate tuples with some basic sanity checking.
 
     Args:
-        lat_coords: Tuple of latitude coordinates
-        lon_coords: Tuple of longitude coordinates
-        min_bbox_size: Override config default if provided
+        lat_coords (tuple): Tuple of latitude coordinates
+        lon_coords (tuple): Tuple of longitude coordinates
+        min_bbox_size (float): Override config default if provided
+
+    Returns:
+        tuple[tuple[float, float], tuple[float, float]]: Tuple of validated (lat_coords, lon_coords)
     """
-    # Use config value if not explicitly provided
+    # use config value if not explicitly provided
     if min_bbox_size is None:
         min_bbox_size = config.min_bbox_size
 
@@ -100,7 +104,7 @@ def check_bbox(
 class TesseraUtils:
     """Utility class for tessera-related operations with config integration."""
 
-    def __init__(self, config_instance=None):
+    def __init__(self, config_instance: Optional[Config] = None):
         """Initialize with optional config instance."""
         self.tessera = GeoTessera()
         self.config = config_instance or config
@@ -119,12 +123,12 @@ class TesseraUtils:
         Returns:
             List of (lat, lon) tuples for tiles to merge
         """
-        # Use config values
+        # assign config values if overwrite values not provided
         target_year = (
             target_year if target_year is not None else self.config.target_year
         )
 
-        # Validate and get bounding box
+        # validate and get bounding box
         (lat_min, lat_max), (lon_min, lon_max) = check_bbox(lat_coords, lon_coords)
         roi_bounds = (
             lon_min,
@@ -135,7 +139,7 @@ class TesseraUtils:
 
         print(f"\nSearching for tiles in ROI: {roi_bounds} for year {target_year}")
 
-        # --- Find tiles in ROI ---
+        # find tiles in ROI
         tiles_to_merge = []
         for available_year in self.tessera.get_available_years():
             self.tessera._ensure_year_loaded(available_year)
@@ -247,18 +251,30 @@ class TesseraUtils:
 
     def reproject_embedding(
         self,
-        embedding,
-        src_crs,
-        src_transform,
-        src_height,
-        src_width,
-        src_bounds,
-        target_crs,
-    ):
+        embedding: np.ndarray,
+        src_crs: str,
+        src_transform: Affine,
+        src_height: int,
+        src_width: int,
+        src_bounds: tuple[float, float, float, float],
+        target_crs: str,
+    ) -> tuple[np.ndarray, Affine, int, int]:
         """
         Reproject an embedding to a target CRS.
+
+        Args:
+            embedding (np.ndarray): Embedding array of shape (H, W, C)
+            src_crs (str): Source CRS
+            src_transform (Affine): Source transform
+            src_height (int): Source height
+            src_width (int): Source width
+            src_bounds (tuple[float, float, float, float]): Source bounds
+            target_crs (str): Target CRS
+
+        Returns:
+            tuple[np.ndarray, Affine, int, int]: Reprojected embedding, transform, width, height
         """
-        # 2. Calculate the parameters for reprojection
+        # calculate the parameters for reprojection
         dst_transform, dst_width, dst_height = calculate_default_transform(
             src_crs, target_crs, src_width, src_height, *src_bounds
         )
@@ -273,7 +289,7 @@ class TesseraUtils:
             (embedding.shape[2], dst_height, dst_width), dtype=embedding.dtype
         )
 
-        # 4. Perform the reprojection band by band
+        # perform the reprojection band by band
         for band_idx in range(embedding.shape[2]):
             reproject(
                 source=embedding[:, :, band_idx],
@@ -289,15 +305,23 @@ class TesseraUtils:
 
     def save_reprojected_embedding_in_memory(
         self,
-        reprojected_embedding,
-        dst_transform,
-        target_crs,
-        dst_height,
-        dst_width,
-        embedding,
+        reprojected_embedding: np.ndarray,
+        dst_transform: Affine,
+        target_crs: str,
+        dst_height: int,
+        dst_width: int,
+        embedding: np.ndarray,
     ) -> MemoryFile:
         """
         Save a reprojected embedding to an in-memory file.
+
+        Args:
+            reprojected_embedding (np.ndarray): Reprojected embedding array of shape (H, W, C)
+            dst_transform (Affine): Destination transform
+            target_crs (str): Target CRS
+            dst_height (int): Destination height
+            dst_width (int): Destination width
+            embedding (np.ndarray): Original embedding array of shape (H, W, C)
 
         Returns:
             MemoryFile object containing the reprojected data
@@ -316,21 +340,23 @@ class TesseraUtils:
 
         return memfile
 
-    def merge_tiles(self, reprojected_tiles: List[MemoryFile]):
+    def merge_tiles(
+        self, reprojected_tiles: List[MemoryFile]
+    ) -> tuple[np.ndarray, Affine]:
         """
         Merge tiles into a single raster.
 
         Args:
-            reprojected_tiles: List of MemoryFile objects
+            reprojected_tiles (List[MemoryFile]): List of MemoryFile objects
 
         Returns:
-            Tuple of (embedding_mosaic, mosaic_transform)
+            tuple[np.ndarray, Affine]: Tuple of (embedding_mosaic, mosaic_transform)
         """
         print("\nMerging all tiles...")
         if not reprojected_tiles:
             raise ValueError("No tiles to merge")
 
-        # Open all memory files for merging
+        # open all memory files for merging
         datasets = []
         try:
             for memfile in reprojected_tiles:
@@ -340,7 +366,7 @@ class TesseraUtils:
             embedding_mosaic = np.transpose(merged_array, (1, 2, 0))  # (H, W, C)
 
         finally:
-            # Clean up
+            # clean up
             for dataset in datasets:
                 dataset.close()
             for memfile in reprojected_tiles:
@@ -356,79 +382,20 @@ class TesseraUtils:
         Complete workflow: check tiles, reproject, and merge into mosaic.
 
         Args:
-            lat_coords: Tuple of latitude coordinates
-            lon_coords: Tuple of longitude coordinates
-            target_year: Override config year if provided
+            lat_coords (tuple): Tuple of latitude coordinates
+            lon_coords (tuple): Tuple of longitude coordinates
+            target_year (int): Override config year if provided
 
         Returns:
             Tuple of (embedding_mosaic, mosaic_transform)
         """
-        # Step 1: Find tiles in ROI
+        # find tiles in ROI
         tiles_to_merge = self.check_tessera_tiles(lat_coords, lon_coords, target_year)
 
-        # Step 2: Reproject tiles
+        # reproject tiles
         reprojected_tiles = self.reproject_tessera_tiles(tiles_to_merge)
 
-        # Step 3: Merge tiles
+        # merge tiles
         embedding_mosaic, mosaic_transform = self.merge_tiles(reprojected_tiles)
 
         return embedding_mosaic, mosaic_transform
-
-
-# # Backward compatibility functions using global tessera instance
-# TESSERA = GeoTessera()
-
-
-# def check_tessera_tiles(
-#     lat_coords: tuple, lon_coords: tuple, target_year: Optional[int] = None
-# ) -> list[tuple[float, float]]:
-#     """Backward compatibility wrapper."""
-#     tessera_utils = TesseraUtils()
-#     return tessera_utils.check_tessera_tiles(lat_coords, lon_coords, target_year)
-
-
-# def fetch_embedding_metadata(lat, lon, target_year):
-#     """Backward compatibility wrapper."""
-#     tessera_utils = TesseraUtils()
-#     return tessera_utils.fetch_embedding_metadata(lat, lon, target_year)
-
-
-# def reproject_tessera_tiles(tiles_to_merge):
-#     """Backward compatibility wrapper."""
-#     tessera_utils = TesseraUtils()
-#     return tessera_utils.reproject_tessera_tiles(tiles_to_merge)
-
-
-# def reproject_embedding(
-#     embedding, src_crs, src_transform, src_height, src_width, src_bounds, target_crs
-# ):
-#     """Backward compatibility wrapper."""
-#     tessera_utils = TesseraUtils()
-#     return tessera_utils.reproject_embedding(
-#         embedding, src_crs, src_transform, src_height, src_width, src_bounds, target_crs
-#     )
-
-
-# def save_reprojected_embedding_in_memory(
-#     reprojected_embedding, dst_transform, target_crs, dst_height, dst_width, embedding
-# ):
-#     """Backward compatibility wrapper."""
-#     tessera_utils = TesseraUtils()
-#     return tessera_utils.save_reprojected_embedding_in_memory(
-#         reprojected_embedding,
-#         dst_transform,
-#         target_crs,
-#         dst_height,
-#         dst_width,
-#         embedding,
-#     )
-
-
-# def merge_tiles(tiles_to_merge):
-#     """Backward compatibility wrapper."""
-#     tessera_utils = TesseraUtils()
-#     return tessera_utils.merge_tiles(tiles_to_merge)
-
-
-# # Create global instance for backward compatibility
-# tessera_utils = TesseraUtils()
