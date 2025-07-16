@@ -21,15 +21,24 @@ from ipywidgets import (
     ToggleButton,
     VBox,
 )
+from rasterio import Affine
 from rasterio.transform import array_bounds
 from sklearn.decomposition import PCA
+
+from .classifier import EmbeddingClassifier
 
 
 class InteractiveMappingTool:
     """Interactive mapping tool for labeling training points on satellite imagery."""
 
     def __init__(
-        self, min_lat, max_lat, min_lon, max_lon, embedding_mosaic, mosaic_transform
+        self,
+        min_lat: float,
+        max_lat: float,
+        min_lon: float,
+        max_lon: float,
+        embedding_mosaic: np.ndarray,
+        mosaic_transform: Affine,
     ):
         self.training_points = []
         self.markers = {}
@@ -46,7 +55,12 @@ class InteractiveMappingTool:
         self.embedding_mosaic = embedding_mosaic
         self.mosaic_transform = mosaic_transform
 
-        # initialize the tool
+        # initialize embedding classifier
+        self.embedding_classifier = EmbeddingClassifier(
+            embedding_mosaic, mosaic_transform
+        )
+
+        # initialize tool
         self._setup_initial_classes()
         self._create_widgets()
         self.vis_bounds, self.vis_data_url = self.visualise_embedding(
@@ -56,8 +70,15 @@ class InteractiveMappingTool:
         self._setup_event_handlers()
         self._create_layout()
 
-    def get_or_assign_color_for_class(self, class_name):
-        """Assigns a consistent color if one doesn't exist, otherwise returns existing color."""
+    def get_or_assign_color_for_class(self, class_name: str) -> str:
+        """Assigns a consistent color if one doesn't exist, otherwise returns existing color.
+
+        Args:
+            class_name (str): Name of the class to get or assign a color for
+
+        Returns:
+            str: Hex color code
+        """
         if class_name not in self.class_color_map:
             new_color_index = len(self.class_color_map) % 10
             self.class_color_map[class_name] = mcolors.to_hex(
@@ -65,13 +86,15 @@ class InteractiveMappingTool:
             )
         return self.class_color_map[class_name]
 
-    def _setup_initial_classes(self):
+    def _setup_initial_classes(self) -> None:
+        """Initialize default class names and assign them colors."""
         initial_classes = ["Water", "Urban"]
         for c in initial_classes:
             self.get_or_assign_color_for_class(c)
         self.initial_classes = initial_classes
 
-    def _create_widgets(self):
+    def _create_widgets(self) -> None:
+        """Create all UI widgets for the interactive mapping tool."""
         self.class_dropdown = Dropdown(
             options=self.initial_classes, value="Water", description="Class:"
         )
@@ -135,7 +158,8 @@ class InteractiveMappingTool:
             description="Basemap:",
         )
 
-    def _create_map(self):
+    def _create_map(self) -> None:
+        """Create the interactive map with basemap and overlay layers."""
         map_layout = Layout(height="600px", width="100%")
         self.m = Map(
             layers=(self.current_basemap,),
@@ -153,9 +177,10 @@ class InteractiveMappingTool:
         )
         self.m.add(self.image_overlay)
 
-        print("Image overlay added to map")
+        print("Image overlay added to map.")
 
-    def update_legend(self):
+    def update_legend(self) -> None:
+        """Update the legend widget with current class colors."""
         if not self.class_color_map:
             self.legend_widget.value = "<b>Legend:</b> <i>No classes defined.</i>"
             return
@@ -176,19 +201,28 @@ class InteractiveMappingTool:
         html += "</div>"
         self.legend_widget.value = html
 
-    def update_opacity(self, change):
+    def update_opacity(self, change: dict) -> None:
+        """Update opacity of embedding and classification overlays.
+
+        Args:
+            change (dict): Widget change event containing the new value.
+        """
         is_visible = self.opacity_toggle.value
         opacity_value = self.opacity_slider.value if is_visible else 0
         self.image_overlay.opacity = opacity_value
 
-        # Update classification layer opacity if it exists
+        # update classification layer opacity if it exists
         if self.classification_layer and self.classification_layer in self.m.layers:
             self.classification_layer.opacity = opacity_value
 
         self.opacity_slider.disabled = not is_visible
 
-    def on_add_class_button_clicked(self, b):
-        # CHANGE: Convert to method, use self attributes
+    def on_add_class_button_clicked(self, b: dict) -> None:
+        """Handle click event for adding a new class.
+
+        Args:
+            b (dict): Button click event object.
+        """
         new_class = self.new_class_text.value.strip()
         if new_class and new_class not in self.class_dropdown.options:
             self.class_dropdown.options += (new_class,)
@@ -202,8 +236,12 @@ class InteractiveMappingTool:
                 self.output_log.clear_output()
                 print(f"Added new class: '{new_class}'")
 
-    def on_basemap_change(self, change):
-        # CHANGE: Convert to method, use self attributes
+    def on_basemap_change(self, change: dict) -> None:
+        """Handle basemap selection change.
+
+        Args:
+            change (dict): Widget change event containing the selected basemap name.
+        """
         new_basemap_name = change["new"]
         new_layer = self.basemap_layers[new_basemap_name]
         if self.current_basemap in self.m.layers:
@@ -211,18 +249,24 @@ class InteractiveMappingTool:
         self.m.add_layer(new_layer)
         self.current_basemap = new_layer
 
-    def on_class_selection_change(self, change):
-        """When dropdown changes, update the color picker to match."""
-        # CHANGE: Convert to method, use self attributes
+    def on_class_selection_change(self, change) -> None:
+        """Handle class dropdown selection change and update color picker.
+
+        Args:
+            change: Widget change event containing the selected class name.
+        """
         selected_class = change.new
         color = self.get_or_assign_color_for_class(selected_class)
         self.color_picker.unobserve(self.on_color_change, names="value")
         self.color_picker.value = color
         self.color_picker.observe(self.on_color_change, names="value")
 
-    def on_color_change(self, change):
-        """When color picker changes, update the map and redraw pins."""
-        # CHANGE: Convert to method, use self attributes
+    def on_color_change(self, change) -> None:
+        """Handle color picker change and update existing markers.
+
+        Args:
+            change: Widget change event containing the new color value.
+        """
         new_color = change.new
         class_to_update = self.class_dropdown.value
 
@@ -243,20 +287,25 @@ class InteractiveMappingTool:
                     weight=1,
                 )
 
-                # Attach the click-to-remove handler to the recolored marker
+                # attach the click-to-remove handler to the recolored marker
                 recolored_marker.on_click(partial(self.remove_marker, marker_key))
 
                 self.m.add(recolored_marker)
                 self.markers[marker_key] = recolored_marker
 
-    def remove_marker(self, marker_key, **kwargs):
-        # CHANGE: Convert to method, use self attributes
-        # Remove from map
+    def remove_marker(self, marker_key: tuple, **kwargs: dict) -> None:
+        """Remove a training point marker from the map and data.
+
+        Args:
+            marker_key: Tuple of coordinates for the marker to remove.
+            kwargs: Additional keyword arguments.
+        """
+        # remove from map
         if marker_key in self.markers:
             self.m.remove_layer(self.markers[marker_key])
             del self.markers[marker_key]
 
-        # Remove from training data
+        # remove from training data
         coords_to_remove = marker_key
         self.training_points = [
             p for p in self.training_points if tuple(p[0]) != coords_to_remove
@@ -270,10 +319,10 @@ class InteractiveMappingTool:
                 f"Removed point at ({coords_to_remove[0]:.4f}, {coords_to_remove[1]:.4f}). Total points: {len(self.training_points)}"
             )
 
-    def handle_map_click(self, **kwargs):
-        # CHANGE: Convert to method, use self attributes
-        # If a marker was just deleted, this click was used
-        # Ignore it and reset the flag for the next click
+    def handle_map_click(self, **kwargs: dict) -> None:
+        """Handle map click events to add new training points."""
+        # if a marker was just deleted, this click was used
+        # ignore it and reset the flag for the next click
         if self.A_MARKER_WAS_JUST_REMOVED:
             self.A_MARKER_WAS_JUST_REMOVED = False
             return
@@ -314,10 +363,14 @@ class InteractiveMappingTool:
                     f"Added '{selected_class}' point at ({coords[0]:.4f}, {coords[1]:.4f}). Total points: {len(self.training_points)}"
                 )
 
-    def on_clear_pins_button_clicked(self, b):
-        # CHANGE: Convert to method, use self attributes
+    def on_clear_pins_button_clicked(self, b=None) -> None:
+        """Clear all training points and markers from the map.
+
+        Args:
+            b: Button click event object.
+        """
         with self.output_log:
-            for key, marker in self.markers.items():
+            for _, marker in self.markers.items():
                 self.m.remove_layer(marker)
             self.training_points, self.markers, self.class_color_map = [], {}, {}
             self.output_log.clear_output()
@@ -329,8 +382,12 @@ class InteractiveMappingTool:
             )
             self.update_legend()
 
-    def on_clear_classification_clicked(self, b):
-        # CHANGE: Convert to method, use self attributes
+    def on_clear_classification_clicked(self, b: dict) -> None:
+        """Remove the classification overlay from the map.
+
+        Args:
+            b: Button click event object.
+        """
         if self.classification_layer and self.classification_layer in self.m.layers:
             self.m.remove_layer(self.classification_layer)
             self.classification_layer = None
@@ -340,128 +397,121 @@ class InteractiveMappingTool:
                 print("Classification layer removed.")
 
     def on_classify_button_clicked(self, b):
-        """Perform k-nearest neighbors classification and display results."""
-        if len(self.training_points) < 2:
-            with self.output_log:
-                self.output_log.clear_output()
-                print("Error: Need at least 2 training points to classify.")
-            return
+        """Perform tessera embedding-based classification and display results on map.
 
-        # Check if we have training points for at least 2 classes
-        unique_classes = set(class_name for _, class_name in self.training_points)
-        if len(unique_classes) < 2:
-            with self.output_log:
-                self.output_log.clear_output()
-                print("Error: Need training points for at least 2 different classes.")
-            return
+        Args:
+            b: Button click event object.
+        """
+        with self.output_log:
+            self.output_log.clear_output()
 
-        try:
-            with self.output_log:
-                self.output_log.clear_output()
-                print("Starting classification...")
+            # validate training points
+            is_valid, error_msg = self.embedding_classifier.validate_training_points(
+                self.training_points, min_points=2, min_classes=2
+            )
+            if not is_valid:
+                print(f"ERROR: {error_msg}")
+                return
 
-            # Create feature matrix and labels from training points
-            import numpy as np
-            from sklearn.neighbors import KNeighborsClassifier
+            try:
+                print("\nStarting classification...")
 
-            # Extract features and labels
-            training_coords = np.array([point for point, _ in self.training_points])
-            training_labels = [class_name for _, class_name in self.training_points]
+                # prepare training data from labeled points
+                X_train, y_train, validation_info = (
+                    self.embedding_classifier.prepare_training_data(
+                        self.training_points
+                    )
+                )
 
-            # Create simple k-NN classifier
-            n_neighbors = min(3, len(self.training_points))
-            knn = KNeighborsClassifier(n_neighbors=n_neighbors)
-            knn.fit(training_coords, training_labels)
+                print(
+                    f"Discovered classes for training: {validation_info['unique_classes']}"
+                )
+                print(
+                    f"Mapping {validation_info['total_points']} training points to pixel coordinates..."
+                )
 
-            # Create a grid for classification
-            lat_range = np.linspace(self.min_lat, self.max_lat, 100)
-            lon_range = np.linspace(self.min_lon, self.max_lon, 100)
-            lat_grid, lon_grid = np.meshgrid(lat_range, lon_range)
-            grid_points = np.column_stack([lat_grid.ravel(), lon_grid.ravel()])
+                # report skipped points
+                if validation_info["skipped_points"]:
+                    for lat, lon, class_name in validation_info["skipped_points"]:
+                        print(
+                            f"\tWARNING: Skipping point for '{class_name}' at ({lat:.4f}, {lon:.4f}) as it falls outside the mosaic's bounds."
+                        )
 
-            # Predict classes for grid points
-            predictions = knn.predict(grid_points)
+                if validation_info["valid_points"] == 0:
+                    print(
+                        "ERROR: None of the training points were inside the mosaic bounds."
+                    )
+                    return
 
-            # Create classification visualization
-            import base64
-            import io
+                # train the classifier
+                print(
+                    f"Training k-NN classifier on {validation_info['valid_points']} valid points..."
+                )
+                k = self.embedding_classifier.train_classifier(X_train, y_train)
+                print(f"Using k={k} neighbors")
 
-            import matplotlib.pyplot as plt
+                # classify the entire mosaic
+                print("\nClassifying pixels...")
+                classification_result = self.embedding_classifier.classify_mosaic(
+                    batch_size=15000
+                )
 
-            # Create color map for classes
-            unique_predictions = np.unique(predictions)
-            colors = [
-                self.class_color_map.get(cls, "#888888") for cls in unique_predictions
-            ]
+                # create visualization
+                print("Creating visualization of the classification result...")
+                classification_data_url = (
+                    self.embedding_classifier.create_visualization(
+                        classification_result, self.class_color_map
+                    )
+                )
 
-            # Create classification image
-            fig, ax = plt.subplots(figsize=(10, 8))
-            ax.set_xlim(self.min_lon, self.max_lon)
-            ax.set_ylim(self.min_lat, self.max_lat)
+                # display results on map
+                print("Displaying result on the map...")
 
-            # Plot classification regions
-            for i, class_name in enumerate(unique_predictions):
-                mask = predictions == class_name
-                if np.any(mask):
-                    class_points = grid_points[mask]
-                    ax.scatter(
-                        class_points[:, 1],
-                        class_points[:, 0],
-                        c=self.class_color_map.get(class_name, "#888888"),
-                        alpha=0.3,
-                        s=1,
+                # remove existing classification layer if present
+                if (
+                    self.classification_layer
+                    and self.classification_layer in self.m.layers
+                ):
+                    self.m.remove_layer(self.classification_layer)
+
+                # create new ImageOverlay for the classification
+                self.classification_layer = ImageOverlay(
+                    url=classification_data_url,
+                    bounds=self.vis_bounds,
+                    opacity=0.7,
+                    name="Classification",
+                )
+                self.m.add(self.classification_layer)
+
+                # enable the clear button
+                self.clear_classification_button.disabled = False
+
+                # print completion message with statistics
+                stats = self.embedding_classifier.get_classification_stats(
+                    classification_result
+                )
+                print("Classification complete.")
+                print(
+                    f"Used {validation_info['valid_points']} training points from {len(validation_info['unique_classes'])} classes."
+                )
+                print("\nClassification Statistics:")
+                for class_name, stat in stats.items():
+                    print(
+                        f"  - {class_name}: {stat['pixels']:,} pixels ({stat['percentage']:.1f}%)"
                     )
 
-            ax.set_xlabel("Longitude")
-            ax.set_ylabel("Latitude")
-            ax.set_title("Classification Results")
-
-            # Save to base64 for overlay
-            buffer = io.BytesIO()
-            plt.savefig(
-                buffer,
-                format="png",
-                bbox_inches="tight",
-                dpi=150,
-                facecolor="none",
-                edgecolor="none",
-                transparent=True,
-            )
-            buffer.seek(0)
-            plt.close(fig)
-
-            b64_data = base64.b64encode(buffer.read()).decode("utf-8")
-            classification_url = f"data:image/png;base64,{b64_data}"
-
-            # Remove existing classification layer if present
-            if self.classification_layer and self.classification_layer in self.m.layers:
-                self.m.remove_layer(self.classification_layer)
-
-            # Add new classification layer
-            classification_bounds = (
-                (self.min_lat, self.min_lon),
-                (self.max_lat, self.max_lon),
-            )
-            self.classification_layer = ImageOverlay(
-                url=classification_url, bounds=classification_bounds, opacity=0.6
-            )
-            self.m.add(self.classification_layer)
-            self.clear_classification_button.disabled = False
-
-            with self.output_log:
-                print(
-                    f"Classification complete! Used {len(self.training_points)} training points."
-                )
-                print(
-                    f"Found {len(unique_predictions)} classes: {', '.join(unique_predictions)}"
-                )
-
-        except Exception as e:
-            with self.output_log:
-                self.output_log.clear_output()
+            except Exception as e:
                 print(f"Error during classification: {e}")
+                import traceback
 
-    def on_save_button_clicked(self, b):
+                traceback.print_exc()
+
+    def on_save_button_clicked(self, b: dict) -> None:
+        """Save training points and class colors to a file.
+
+        Args:
+            b: Button click event object.
+        """
         fname = self.filename_text.value
         if not fname:
             with self.output_log:
@@ -488,7 +538,12 @@ class InteractiveMappingTool:
                 self.output_log.clear_output()
                 print(f"Error saving file: {e}")
 
-    def on_load_button_clicked(self, b):
+    def on_load_button_clicked(self, b: dict) -> None:
+        """Load training points and class colors from a file.
+
+        Args:
+            b: Button click event object.
+        """
         fname = self.filename_text.value
         if not fname:
             with self.output_log:
@@ -548,6 +603,7 @@ class InteractiveMappingTool:
             )
 
     def _setup_event_handlers(self):
+        """Setup event handlers for all UI widgets."""
         self.opacity_toggle.observe(self.update_opacity, names="value")
         self.opacity_slider.observe(self.update_opacity, names="value")
         self.add_class_button.on_click(self.on_add_class_button_clicked)
@@ -562,6 +618,7 @@ class InteractiveMappingTool:
         self.classify_button.on_click(self.on_classify_button_clicked)
 
     def _create_layout(self):
+        """Create the layout for the interactive mapping tool."""
         class_controls = HBox([self.class_dropdown, self.color_picker])
         new_class_controls = HBox([self.new_class_text, self.add_class_button])
         opacity_controls = HBox([self.opacity_toggle, self.opacity_slider])
@@ -598,20 +655,28 @@ class InteractiveMappingTool:
         file_controls = HBox([self.filename_text, self.save_button, self.load_button])
         self.ui = VBox([top_bar, self.m, buttons, file_controls, self.output_log])
 
-    def display(self):
+    def display(self) -> None:
+        """Display the interactive mapping tool."""
         display(self.ui)
         self.update_legend()
 
-    def get_training_data(self):
-        """Return current training points and class colors."""
+    def get_training_data(self) -> dict:
+        """Return current training points and class colors.
+
+        Returns:
+            dict: Dictionary containing training points and class colors.
+        """
         return {
             "training_points": self.training_points,
             "class_color_map": self.class_color_map,
         }
 
     def _create_pca_visualization(
-        self, embedding_mosaic, n_samples=100000, percentiles=[2, 98]
-    ):
+        self,
+        embedding_mosaic: np.ndarray,
+        n_samples: int = 100000,
+        percentiles: list[int] = [2, 98],
+    ) -> np.ndarray:
         """Create PCA-based visualization of embedding mosaic.
 
         Args:
@@ -643,15 +708,17 @@ class InteractiveMappingTool:
 
         return vis_mosaic
 
-    def _normalize_pca_channels(self, pca_image, percentiles=[2, 98]):
+    def _normalize_pca_channels(
+        self, pca_image: np.ndarray, percentiles: list[int] = [2, 98]
+    ) -> np.ndarray:
         """Normalize PCA channels for display.
 
         Args:
-            pca_image: PCA-transformed image array
-            percentiles: Percentiles for clipping
+            pca_image (np.ndarray): PCA-transformed image array
+            percentiles (list[int]): Percentiles for clipping
 
         Returns:
-            vis_mosaic: Normalized visualization array
+            vis_mosaic (np.ndarray): Normalized visualization array
         """
         vis_mosaic = np.zeros_like(pca_image)
         for i in range(3):
@@ -663,11 +730,11 @@ class InteractiveMappingTool:
                 )
         return vis_mosaic
 
-    def _create_base64_image(self, vis_mosaic):
+    def _create_base64_image(self, vis_mosaic: np.ndarray) -> str:
         """Convert visualization array to base64 data URL.
 
         Args:
-            vis_mosaic: Normalized visualization array
+            vis_mosaic (np.ndarray): Normalized visualization array
 
         Returns:
             str: Base64 data URL for the image
@@ -679,8 +746,12 @@ class InteractiveMappingTool:
         return f"data:image/png;base64,{b64_data}"
 
     def visualise_embedding(
-        self, embedding_mosaic, mosaic_transform, n_samples=100000, percentiles=[2, 98]
-    ) -> tuple:
+        self,
+        embedding_mosaic: np.ndarray,
+        mosaic_transform: Affine,
+        n_samples: int = 100000,
+        percentiles: list[int] = [2, 98],
+    ) -> tuple[tuple[tuple[float, float], tuple[float, float]], str]:
         """
         Visualise an embedding mosaic using PCA.
 
@@ -691,16 +762,18 @@ class InteractiveMappingTool:
             percentiles: Percentiles for normalization
 
         Returns:
-            tuple: (VIS_BOUNDS, VIS_DATA_URL) for map overlay
+            tuple[tuple[tuple[float, float], tuple[float, float]], str]: (vis_bounds, vis_data_url) for map overlay
         """
-        mosaic_height, mosaic_width, num_channels = embedding_mosaic.shape
+        mosaic_height, mosaic_width, _ = embedding_mosaic.shape
 
         # calculate bounds - mosaic is in EPSG:4326, so bounds are already in lat/lon
         west, south, east, north = array_bounds(
             mosaic_height, mosaic_width, mosaic_transform
         )
         vis_bounds = ((south, west), (north, east))
-        print(f"Calculated bounds: {vis_bounds}")
+        print(
+            f"Bounds of displayed embedding mosaic: ┗ ({south:.2f}, {west:.2f}) | ┓ ({north:.2f}, {east:.2f})"
+        )
 
         # create PCA visualization
         vis_mosaic = self._create_pca_visualization(
@@ -713,8 +786,12 @@ class InteractiveMappingTool:
         return vis_bounds, vis_data_url
 
     def update_embedding_overlay(
-        self, embedding_mosaic, mosaic_transform, n_samples=100000, percentiles=[2, 98]
-    ):
+        self,
+        embedding_mosaic: np.ndarray,
+        mosaic_transform: Affine,
+        n_samples: int = 100000,
+        percentiles: list[int] = [2, 98],
+    ) -> None:
         """Update the map with a new embedding visualization overlay.
 
         Args:
@@ -723,20 +800,20 @@ class InteractiveMappingTool:
             n_samples: Number of samples to use for PCA fitting
             percentiles: Percentiles for normalization
         """
-        # Create visualization
+        # create visualization
         vis_bounds, vis_data_url = self.visualise_embedding(
             embedding_mosaic, mosaic_transform, n_samples, percentiles
         )
 
-        # Update the image overlay
+        # update the image overlay
         self.image_overlay.url = vis_data_url
         self.image_overlay.bounds = vis_bounds
 
-        # Update bounds for classification if needed
+        # update bounds for classification if needed
         self.vis_bounds = vis_bounds
         self.vis_data_url = vis_data_url
 
-        # Update bounding box for classification grid
+        # update bounding box for classification grid
         south, west = vis_bounds[0]
         north, east = vis_bounds[1]
         self.min_lat, self.max_lat = south, north
