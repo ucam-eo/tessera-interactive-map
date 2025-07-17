@@ -6,6 +6,7 @@ import rasterio
 
 # geospatial
 from geotessera import GeoTessera
+from geotessera.registry_utils import get_all_blocks_in_range
 from rasterio import Affine
 from rasterio.enums import Resampling
 from rasterio.io import MemoryFile
@@ -139,13 +140,26 @@ class TesseraUtils:
 
         print(f"\nSearching for tiles in ROI: {roi_bounds} for year {target_year}")
 
-        # find tiles in ROI
-        tiles_to_merge = []
-        for available_year in self.tessera.get_available_years():
-            self.tessera._ensure_year_loaded(available_year)
+        # find all registry blocks that intersect the ROI
+        intersecting_blocks = get_all_blocks_in_range(lon_min, lon_max, lat_min, lat_max)
+        print(f"ROI intersects with {len(intersecting_blocks)} registry block(s). Loading them...")
 
-        # search tessera for embeddings within ROI
-        for emb_year, lat, lon in self.tessera.list_available_embeddings():
+        # lazily load the registry for each intersecting block
+        # this populates the internal list of available embeddings in the GeoTessera object
+        for block_lon, block_lat in intersecting_blocks:
+            try:
+                # the _ensure_block_loaded method needs any coordinate within the block
+                # the block's lower-left corner coordinate works for this
+                self.tessera._ensure_block_loaded(year=target_year, lon=block_lon, lat=block_lat)
+            except Exception as e:
+                # this might happen if a block registry is missing on the server for the given year
+                print(f"Warning: Could not load block for ({block_lon}, {block_lat}) in year {target_year}: {e}")
+
+        print("Required registry blocks loaded.")
+
+        # find tiles in ROI by searching the now-populated list of available embeddings
+        tiles_to_merge = []
+        for emb_year, lat, lon in self.tessera._available_embeddings:
             if emb_year != target_year:
                 continue
             tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat = (
@@ -167,6 +181,7 @@ class TesseraUtils:
                 f"\nNo embedding tiles found for the specified ROI in year {target_year}"
             )
         print(f"\nFound {len(tiles_to_merge)} tiles to merge.")
+
         return tiles_to_merge
 
     def fetch_embedding_metadata(self, lat: float, lon: float, target_year: int):
