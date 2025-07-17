@@ -53,6 +53,7 @@ class InteractiveMappingTool:
         self.class_color_map = {}
         self.tab10_cmap = plt.colormaps.get_cmap("tab10")
         self.classification_layer = None
+        self.sentinel_layer = None 
 
         # arguments
         self.min_lat = min_lat
@@ -159,10 +160,19 @@ class InteractiveMappingTool:
 
         self.current_basemap = self.basemap_layers["Esri Satellite"]
 
+        basemap_options = list(self.basemap_layers.keys()) + ["Sentinel-2"]
         self.basemap_selector = Dropdown(
-            options=list(self.basemap_layers.keys()),
+            options=basemap_options,
             value="Esri Satellite",
             description="Basemap:",
+        )
+        
+        years = [str(y) for y in range(2018, 2025)] # Years 2018-2024
+        self.year_selector = Dropdown(
+            options=years,
+            value='2024',
+            description="Year:",
+            layout={'display': 'none'} # Initially hidden
         )
 
     def _create_map(self) -> None:
@@ -243,6 +253,28 @@ class InteractiveMappingTool:
                 self.output_log.clear_output()
                 print(f"Added new class: '{new_class}'")
 
+    def _update_sentinel_layer(self):
+        """Creates or updates the Sentinel-2 layer with the selected year."""
+        year = self.year_selector.value
+        sentinel_url = f"https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-{year}_3857/default/g/{{z}}/{{y}}/{{x}}.jpg"
+
+        # If the sentinel layer doesn't exist yet, create it and add it to the map
+        if self.sentinel_layer is None:
+            self.sentinel_layer = TileLayer(
+                url=sentinel_url,
+                attribution="Sentinel-2 cloudless by EOx",
+                name=f"Sentinel-2 ({year})"
+            )
+            self.m.add(self.sentinel_layer)
+        # If it already exists, just update its URL (more efficient)
+        else:
+            self.sentinel_layer.url = sentinel_url
+            self.sentinel_layer.name = f"Sentinel-2 ({year})"
+            
+    def on_year_change(self, change: dict):
+        """Handler for when the year dropdown changes."""
+        self._update_sentinel_layer()
+
     def on_basemap_change(self, change: dict) -> None:
         """Handle basemap selection change.
 
@@ -250,12 +282,35 @@ class InteractiveMappingTool:
             change (dict): Widget change event containing the selected basemap name.
         """
         new_basemap_name = change["new"]
-        new_layer = self.basemap_layers[new_basemap_name]
-        if self.current_basemap in self.m.layers:
-            self.m.remove_layer(self.current_basemap)
-        self.m.add_layer(new_layer)
-        self.current_basemap = new_layer
-
+        # If Sentinel-2 is selected
+        if new_basemap_name == "Sentinel-2":
+            # 1. Make the year selector visible
+            self.year_selector.layout.display = 'flex'
+            
+            # 2. Remove the old static basemap
+            if self.current_basemap in self.m.layers:
+                self.m.remove_layer(self.current_basemap)
+                
+            # 3. Create or update the Sentinel layer
+            self._update_sentinel_layer()
+            
+        # If a static basemap is selected
+        else:
+            # 1. Hide the year selector
+            self.year_selector.layout.display = 'none'
+            
+            # 2. Remove the dynamic Sentinel layer if it exists
+            if self.sentinel_layer and self.sentinel_layer in self.m.layers:
+                self.m.remove_layer(self.sentinel_layer)
+                self.sentinel_layer = None # Reset it
+                
+            # 3. Add the selected static layer
+            new_layer = self.basemap_layers[new_basemap_name]
+            if self.current_basemap in self.m.layers:
+                self.m.remove_layer(self.current_basemap)
+            self.m.add_layer(new_layer)
+            self.current_basemap = new_layer
+            
     def on_class_selection_change(self, change) -> None:
         """Handle class dropdown selection change and update color picker.
 
@@ -620,6 +675,7 @@ class InteractiveMappingTool:
         self.clear_pins_button.on_click(self.on_clear_pins_button_clicked)
         self.clear_classification_button.on_click(self.on_clear_classification_clicked)
         self.basemap_selector.observe(self.on_basemap_change, names="value")
+        self.year_selector.observe(self.on_year_change, names='value')
         self.save_button.on_click(self.on_save_button_clicked)
         self.load_button.on_click(self.on_load_button_clicked)
         self.classify_button.on_click(self.on_classify_button_clicked)
@@ -629,9 +685,10 @@ class InteractiveMappingTool:
         class_controls = HBox([self.class_dropdown, self.color_picker])
         new_class_controls = HBox([self.new_class_text, self.add_class_button])
         opacity_controls = HBox([self.opacity_toggle, self.opacity_slider])
+        basemap_controls = VBox([self.basemap_selector, self.year_selector])
         controls = VBox(
             [
-                self.basemap_selector,
+                basemap_controls,
                 class_controls,
                 new_class_controls,
                 opacity_controls,
