@@ -20,20 +20,15 @@ class Config:
 
     # Coordinate Reference System
     target_crs: str = "EPSG:4326"  # WGS84 default
-    # source_crs: str = "EPSG:4326"  # WGS84 default
 
     # Spatial parameters
-    min_bbox_size: float = 0.1  # Minimum bounding box size in degrees
+    min_bbox_size: float = 0.1  # minimum bounding box size in degrees
+    max_bbox_size: float = 10.0  # maximum bounding box size in degrees
     lat_coords: tuple = field(default_factory=lambda: (52.00, 52.20))
     lon_coords: tuple = field(default_factory=lambda: (-0.10, 0.30))
 
     # Temporal
     target_year: int = 2024
-
-    # Output parameters
-    # output_format: str = "GeoTIFF"
-    # output_dtype: str = "float32"
-    # create_overview: bool = True
 
     # Visualisation
     n_samples: int = 100000
@@ -64,7 +59,7 @@ class Config:
         """
         filepath = filepath or config_fp
 
-        # Convert to dictionary, handling Path objects
+        # convert to dictionary, handling Path objects
         config_dict = {}
         for key, value in self.__dict__.items():
             if isinstance(value, Path):
@@ -102,12 +97,11 @@ class Config:
     def get_crs_params(self) -> Dict[str, str]:
         """Get coordinate reference system parameters."""
         return {"target_crs": self.target_crs}
-        # return {"target_crs": self.target_crs, "source_crs": self.source_crs}
 
 
-# Create default config instance
+# create default config instance
 config = Config()
 
-# Try to load from YAML if it exists
+# try to load from YAML if it exists
 if config_fp.exists():
     config = Config.from_yaml()
