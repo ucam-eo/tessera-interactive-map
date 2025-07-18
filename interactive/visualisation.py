@@ -33,6 +33,7 @@ from rasterio.transform import array_bounds
 from sklearn.decomposition import PCA
 
 from .classifier import EmbeddingClassifier
+from .utils import check_bbox_valid
 
 
 class InteractiveMappingTool:
@@ -53,7 +54,7 @@ class InteractiveMappingTool:
         self.class_color_map = {}
         self.tab10_cmap = plt.colormaps.get_cmap("tab10")
         self.classification_layer = None
-        self.sentinel_layer = None 
+        self.sentinel_layer = None
 
         # arguments
         self.min_lat = min_lat
@@ -166,13 +167,13 @@ class InteractiveMappingTool:
             value="Esri Satellite",
             description="Basemap:",
         )
-        
-        years = [str(y) for y in range(2018, 2025)] # Years 2018-2024
+
+        years = [str(y) for y in range(2018, 2025)]  # Years 2018-2024
         self.year_selector = Dropdown(
             options=years,
-            value='2024',
+            value="2024",
             description="Year:",
-            layout={'display': 'none'} # Initially hidden
+            layout={"display": "none"},  # Initially hidden
         )
 
     def _create_map(self) -> None:
@@ -263,14 +264,14 @@ class InteractiveMappingTool:
             self.sentinel_layer = TileLayer(
                 url=sentinel_url,
                 attribution="Sentinel-2 cloudless by EOx",
-                name=f"Sentinel-2 ({year})"
+                name=f"Sentinel-2 ({year})",
             )
             self.m.add(self.sentinel_layer)
         # If it already exists, just update its URL (more efficient)
         else:
             self.sentinel_layer.url = sentinel_url
             self.sentinel_layer.name = f"Sentinel-2 ({year})"
-            
+
     def on_year_change(self, change: dict):
         """Handler for when the year dropdown changes."""
         self._update_sentinel_layer()
@@ -285,32 +286,32 @@ class InteractiveMappingTool:
         # If Sentinel-2 is selected
         if new_basemap_name == "Sentinel-2":
             # 1. Make the year selector visible
-            self.year_selector.layout.display = 'flex'
-            
+            self.year_selector.layout.display = "flex"
+
             # 2. Remove the old static basemap
             if self.current_basemap in self.m.layers:
                 self.m.remove_layer(self.current_basemap)
-                
+
             # 3. Create or update the Sentinel layer
             self._update_sentinel_layer()
-            
+
         # If a static basemap is selected
         else:
             # 1. Hide the year selector
-            self.year_selector.layout.display = 'none'
-            
+            self.year_selector.layout.display = "none"
+
             # 2. Remove the dynamic Sentinel layer if it exists
             if self.sentinel_layer and self.sentinel_layer in self.m.layers:
                 self.m.remove_layer(self.sentinel_layer)
-                self.sentinel_layer = None # Reset it
-                
+                self.sentinel_layer = None  # Reset it
+
             # 3. Add the selected static layer
             new_layer = self.basemap_layers[new_basemap_name]
             if self.current_basemap in self.m.layers:
                 self.m.remove_layer(self.current_basemap)
             self.m.add_layer(new_layer)
             self.current_basemap = new_layer
-            
+
     def on_class_selection_change(self, change) -> None:
         """Handle class dropdown selection change and update color picker.
 
@@ -675,7 +676,7 @@ class InteractiveMappingTool:
         self.clear_pins_button.on_click(self.on_clear_pins_button_clicked)
         self.clear_classification_button.on_click(self.on_clear_classification_clicked)
         self.basemap_selector.observe(self.on_basemap_change, names="value")
-        self.year_selector.observe(self.on_year_change, names='value')
+        self.year_selector.observe(self.on_year_change, names="value")
         self.save_button.on_click(self.on_save_button_clicked)
         self.load_button.on_click(self.on_load_button_clicked)
         self.classify_button.on_click(self.on_classify_button_clicked)
@@ -897,6 +898,9 @@ class BoundingBoxSelector:
         self.selected_rectangle = None
         self.status = None
         self.visual_rectangle = None  # track the visual rectangle layer manually (separate from the draw control)
+        self.bbox_valid = False
+        self.bbox_too_small = False
+        self.bbox_too_large = False
 
         # create world map
         self.map = Map(
@@ -935,17 +939,12 @@ class BoundingBoxSelector:
             value="<b>Instructions:</b> Draw a rectangle on the map to select your bounding box."
         )
         self.coords_output = Output()
-        # self.get_coords_button = Button(
-        #     description="Get Coordinates", button_style="success"
-        # )
-        # self.get_coords_button.on_click(self._on_get_coords_clicked)
 
         # create layout
         self.widget = VBox(
             [
                 self.info_widget,
                 self.map,
-                #  self.get_coords_button,
                 self.coords_output,
             ]
         )
@@ -1007,54 +1006,65 @@ class BoundingBoxSelector:
                     "max_lat": max_lat,
                 }
 
-                # mark presence of rectangle in status
-                self.status = "drawn"
+                # check if bbox is valid (using utils.check_bbox)
+                if check_bbox_valid(
+                    (self.bbox_coords["min_lat"], self.bbox_coords["max_lat"]),
+                    (self.bbox_coords["min_lon"], self.bbox_coords["max_lon"]),
+                    verbose=False,
+                ):
+                    self.bbox_valid = True
+                    # mark presence of rectangle in status
+                    self.status = "drawn"
 
-                # update info widget with enhanced styling
-                self.info_widget.value = f"""
-                <div style="padding: 10px; background-color: #e8f5e8; border: 1px solid #4CAF50; border-radius: 5px;">
-                    <b style="color: #2E7D32;">✓ Bounding Box Selected</b><br>
-                    <div style="margin-top: 8px; font-family: monospace; font-size: 0.9em;">
-                        <b>Longitude:</b> {self.bbox_coords["min_lon"]:.4f} to {self.bbox_coords["max_lon"]:.4f}<br>
-                        <b>Latitude:</b> {self.bbox_coords["min_lat"]:.4f} to {self.bbox_coords["max_lat"]:.4f}
+                    # update info widget with enhanced styling
+                    self.info_widget.value = f"""
+                    <div style="padding: 10px; background-color: #e8f5e8; border: 1px solid #4CAF50; border-radius: 5px;">
+                        <b style="color: #2E7D32;">✓ Bounding Box Selected</b><br>
+                        <div style="margin-top: 8px; font-family: monospace; font-size: 0.9em;">
+                            <b>Longitude:</b> {self.bbox_coords["min_lon"]:.4f} to {self.bbox_coords["max_lon"]:.4f}<br>
+                            <b>Latitude:</b> {self.bbox_coords["min_lat"]:.4f} to {self.bbox_coords["max_lat"]:.4f}
+                        </div>
+                        <div style="margin-top: 8px; font-size: 0.8em; color: #666;">
+                            <i>Draw a new rectangle to replace this selection</i>
+                        </div>
                     </div>
-                    <div style="margin-top: 8px; font-size: 0.8em; color: #666;">
-                        <i>Draw a new rectangle to replace this selection</i>
+                    """
+                else:
+                    self.bbox_valid = False
+                    self.visual_rectangle = (
+                        None  # Reset to avoid "layer not on map" error
+                    )
+                    # check if bbox too large or too small
+                    if self.bbox_coords["max_lat"] - self.bbox_coords["min_lat"] < 0.1:
+                        self.bbox_too_small = True
+                    if self.bbox_coords["max_lon"] - self.bbox_coords["min_lon"] < 0.1:
+                        self.bbox_too_small = True
+                    if self.bbox_coords["max_lat"] - self.bbox_coords["min_lat"] > 10:
+                        self.bbox_too_large = True
+                    if self.bbox_coords["max_lon"] - self.bbox_coords["min_lon"] > 10:
+                        self.bbox_too_large = True
+
+                    if self.bbox_too_small:
+                        error_message = "Bounding Box Too Small"
+                    elif self.bbox_too_large:
+                        error_message = "Bounding Box Too Large"
+                    else:
+                        error_message = "Bounding Box Invalid"
+
+                    self.info_widget.value = f"""
+                    <div style="padding: 10px; background-color: #ffaca6; border: 1px solid #D30000; border-radius: 5px;">
+                        <b style="color: #D30000;">x {error_message}</b><br>
+                        <div style="margin-top: 8px; font-family: monospace; font-size: 0.9em;">
+                            <b>Longitude:</b> {self.bbox_coords["min_lon"]:.4f} to {self.bbox_coords["max_lon"]:.4f}<br>
+                            <b>Latitude:</b> {self.bbox_coords["min_lat"]:.4f} to {self.bbox_coords["max_lat"]:.4f}
+                        </div>
+                        <div style="margin-top: 8px; font-size: 0.8em; color: #666;">
+                            <i>Draw a new rectangle to replace this selection</i>
+                        </div>
                     </div>
-                </div>
-                """
-
-    # def _on_get_coords_clicked(self, button: Button) -> None:
-    #     """Handle get coordinates button click with enhanced output formatting."""
-    #     with self.coords_output:
-    #         self.coords_output.clear_output()
-    #         if self.bbox_coords:
-    #             print("🗺️  Selected Bounding Box Coordinates:")
-    #             print("=" * 45)
-    #             print(f"📍 Min Longitude: {self.bbox_coords['min_lon']:.6f}")
-    #             print(f"📍 Max Longitude: {self.bbox_coords['max_lon']:.6f}")
-    #             print(f"📍 Min Latitude:  {self.bbox_coords['min_lat']:.6f}")
-    #             print(f"📍 Max Latitude:  {self.bbox_coords['max_lat']:.6f}")
-    #             print()
-    #             print("📋 Copy-paste ready for tessera:")
-    #             print("-" * 35)
-    #             print(
-    #                 f"MIN_LON, MAX_LON = {self.bbox_coords['min_lon']:.6f}, {self.bbox_coords['max_lon']:.6f}"
-    #             )
-    #             print(
-    #                 f"MIN_LAT, MAX_LAT = {self.bbox_coords['min_lat']:.6f}, {self.bbox_coords['max_lat']:.6f}"
-    #             )
-
-    #             # Calculate approximate area and diagonal distance for reference
-    #             lat_diff = self.bbox_coords["max_lat"] - self.bbox_coords["min_lat"]
-    #             lon_diff = self.bbox_coords["max_lon"] - self.bbox_coords["min_lon"]
-    #             approx_area = lat_diff * lon_diff
-    #             print()
-    #             print(f"📐 Approximate area: {approx_area:.6f} square degrees")
-    #             print(f"📏 Dimensions: {lat_diff:.4f}° lat × {lon_diff:.4f}° lon")
-    #         else:
-    #             print("❌ No bounding box selected.")
-    #             print("Please draw a rectangle on the map first, then try again.")
+                    """
+                    if self.visual_rectangle is not None:
+                        self.map.remove_layer(self.visual_rectangle)
 
     def display(self):
         """Display the bounding box selector widget."""
