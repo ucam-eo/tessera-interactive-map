@@ -23,6 +23,7 @@ def define_roi(
     lat_coords: Optional[tuple] = None,
     lon_coords: Optional[tuple] = None,
     min_bbox_size: Optional[float] = None,
+    max_bbox_size: Optional[float] = None,
 ) -> tuple[tuple[float, float], tuple[float, float]]:
     """
     Define region of interest using config defaults or user-provided values.
@@ -55,50 +56,72 @@ def define_roi(
 
     min_bbox_size = min_bbox_size if min_bbox_size is not None else config.min_bbox_size
 
-    return check_bbox(lon_coords, lat_coords, min_bbox_size)
+    if check_bbox_valid(lat_coords, lon_coords, min_bbox_size, max_bbox_size):
+        return (lat_coords, lon_coords)
+    else:
+        raise ValueError("Invalid bounding box coordinates provided")
 
 
-def check_bbox(
-    lat_coords: tuple, lon_coords: tuple, min_bbox_size: Optional[float] = None
-) -> tuple[tuple[float, float], tuple[float, float]]:
+def check_bbox_valid(
+    lat_coords: tuple,
+    lon_coords: tuple,
+    min_bbox_size: Optional[float] = None,
+    max_bbox_size: Optional[float] = None,
+    verbose: bool = True,
+) -> bool:
     """
-    Define a bounding box from two coordinate tuples with some basic sanity checking.
+    Validate that a bounding box meets size and coordinate constraints.
 
     Args:
         lat_coords (tuple): Tuple of latitude coordinates
         lon_coords (tuple): Tuple of longitude coordinates
-        min_bbox_size (float): Override config default if provided
+        min_bbox_size (float): Minimum bbox size in degrees. Override config default if provided.
+        max_bbox_size (float): Maximum bbox size in degrees. Override config default if provided.
 
     Returns:
-        tuple[tuple[float, float], tuple[float, float]]: Tuple of validated (lat_coords, lon_coords)
+        bool: True if bounding box is valid, False otherwise
     """
-    # use config value if not explicitly provided
-    if min_bbox_size is None:
-        min_bbox_size = config.min_bbox_size
+    # use config defaults if not provided
+    min_bbox_size = min_bbox_size or config.min_bbox_size
+    max_bbox_size = max_bbox_size or config.max_bbox_size
 
-    if min_bbox_size < 0.1:
-        raise ValueError("Minimum bbox size must be at least 0.1 degrees")
-
+    # extract coordinate bounds
     lat_min, lat_max = min(lat_coords), max(lat_coords)
     lon_min, lon_max = min(lon_coords), max(lon_coords)
 
-    # sanity checks
-    if lat_min < -90 or lat_max > 90:
-        raise ValueError("Latitude values must be between -90 and 90 degrees")
-    if lon_min < -180 or lon_max > 180:
-        raise ValueError("Longitude values must be between -180 and 180 degrees")
+    # validate coordinate ranges
+    if not (-90 <= lat_min <= lat_max <= 90):
+        print("Latitude values must be between -90 and 90 degrees")
+        return False
+    if not (-180 <= lon_min <= lon_max <= 180):
+        print("Longitude values must be between -180 and 180 degrees")
+        return False
 
-    # check that bounded region > min_bbox_size on both sides
-    if lat_max - lat_min < min_bbox_size or lon_max - lon_min < min_bbox_size:
-        raise ValueError(
-            f"Bounding box too small. Minimum size is {min_bbox_size} by {min_bbox_size} degs, "
-            f"but got {lat_max - lat_min:.2f} by {lon_max - lon_min:.2f} degs"
-        )
+    # calculate bbox dimensions
+    lat_size = lat_max - lat_min
+    lon_size = lon_max - lon_min
+
+    # check minimum size constraint
+    if lat_size < min_bbox_size or lon_size < min_bbox_size:
+        print(
+            f"Bounding box too small. Minimum size is {min_bbox_size}° × {min_bbox_size}°, "
+            f"but got {lat_size:.2f}° × {lon_size:.2f}°"
+        ) if verbose else ""
+        return False
+
+    # check maximum size constraint
+    if lat_size > max_bbox_size or lon_size > max_bbox_size:
+        print(
+            f"Bounding box too large. Maximum size is {max_bbox_size}° × {max_bbox_size}°, "
+            f"but got {lat_size:.2f}° × {lon_size:.2f}°"
+        ) if verbose else ""
+        return False
 
     print(
-        f"Bounding box defined:\n┗ ({lat_min:.2f}, {lon_min:.2f}) | ┓ ({lat_max:.2f}, {lon_max:.2f})"
-    )
-    return (lat_min, lat_max), (lon_min, lon_max)
+        f"Bounding box defined:\n"
+        f"┗ ({lat_min:.2f}°, {lon_min:.2f}°) ┓ ({lat_max:.2f}°, {lon_max:.2f}°)"
+    ) if verbose else ""
+    return True
 
 
 class TesseraUtils:
@@ -129,7 +152,10 @@ class TesseraUtils:
         )
 
         # validate and get bounding box
-        (lat_min, lat_max), (lon_min, lon_max) = check_bbox(lat_coords, lon_coords)
+        if not check_bbox_valid(lat_coords, lon_coords):
+            raise ValueError("Invalid bounding box coordinates")
+        lat_min, lat_max = min(lat_coords), max(lat_coords)
+        lon_min, lon_max = min(lon_coords), max(lon_coords)
         roi_bounds = (
             lon_min,
             lat_min,
