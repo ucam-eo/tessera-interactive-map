@@ -5,5 +5,6 @@ lon_coords:
   - 52.00
   - 52.20
 min_bbox_size: 0.1
+max_bbox_size: 10
 target_year: 2024
 target_crs: "EPSG:4326"
