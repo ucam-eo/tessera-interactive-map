@@ -132,6 +132,12 @@ class InteractiveMappingTool:
         self.clear_classification_button = Button(
             description="Clear Classification", disabled=True
         )
+        self.model_selector = Dropdown(
+            options=['kNN', 'Random Forest'],
+            value='kNN',
+            description='Model:',
+            disabled=False,
+        )
         self.filename_text = Text(
             value="labels.json", placeholder="Enter filename", description="Filename:"
         )
@@ -538,12 +544,20 @@ class InteractiveMappingTool:
                     )
                     return
 
-                # train the classifier
-                print(
-                    f"Training k-NN classifier on {validation_info['valid_points']} valid points..."
-                )
-                k = self.embedding_classifier.train_classifier(X_train, y_train)
-                print(f"Using k={k} neighbors")
+                selected_model_display = self.model_selector.value
+                model_name_map = {
+                    'k-Nearest Neighbors': 'knn',
+                    'Random Forest': 'rf'
+                }
+                model_key = model_name_map.get(selected_model_display)
+                
+                if not model_key:
+                    print(f"Error: Invalid model selection '{selected_model_display}'")
+                    return
+
+                print(f"Training {selected_model_display} classifier on {validation_info['valid_points']} valid points...")
+                
+                self.embedding_classifier.train_classifier(X_train, y_train, model_name=model_key)
 
                 # classify the entire mosaic
                 print("\nClassifying pixels...")
@@ -753,6 +767,7 @@ class InteractiveMappingTool:
 
         buttons = HBox(
             [
+                self.model_selector,
                 self.classify_button,
                 self.clear_pins_button,
                 self.clear_classification_button,
