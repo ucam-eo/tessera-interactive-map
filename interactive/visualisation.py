@@ -183,7 +183,7 @@ class InteractiveMappingTool:
             min=1,
             max=9,  # up to 9x9
             step=2, # Ensures odd numbers: 1, 3, 5, 7, 9
-            description='Label Kernel:',
+            description='Label Kernel Size:',
             style={'description_width': 'initial'}
         )
 
@@ -715,19 +715,26 @@ class InteractiveMappingTool:
 
     def _create_layout(self):
         """Create the layout for the interactive mapping tool."""
-        class_controls = HBox([self.class_dropdown, self.color_picker])
+        self.class_dropdown.layout = Layout(width='250px')
+        self.kernel_size_slider.layout = Layout(width='300px')
+        self.new_class_text.layout = Layout(width='250px')
+        self.add_class_button.layout = Layout(width='auto')
+        
+        labeling_actions = HBox([self.class_dropdown, self.kernel_size_slider])
         new_class_controls = HBox([self.new_class_text, self.add_class_button])
+        class_controls_left_col = VBox([labeling_actions, new_class_controls])
+        class_and_color_box = HBox([class_controls_left_col, self.color_picker])
         opacity_controls = HBox([self.opacity_toggle, self.opacity_slider])
         basemap_controls = VBox([self.basemap_selector, self.year_selector])
-        kernel_controls = HBox([self.kernel_size_slider]) 
+        
+        # Main controls VBox
         controls = VBox(
             [
                 basemap_controls,
-                class_controls,
-                new_class_controls,
+                class_and_color_box,
                 opacity_controls,
-                kernel_controls,
-            ]
+            ],
+            layout=Layout(width='auto')
         )
 
         top_bar = HBox(
@@ -735,7 +742,7 @@ class InteractiveMappingTool:
             layout=Layout(
                 width="100%",
                 height="auto",
-                justify_content="flex-start",
+                justify_content="space-between",
                 align_items="flex-start",
             ),
         )
