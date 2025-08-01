@@ -27,9 +27,11 @@ from ipywidgets import (
     Text,
     ToggleButton,
     VBox,
+    IntSlider,
 )
 from rasterio import Affine
 from rasterio.transform import array_bounds
+from rasterio import transform
 from sklearn.decomposition import PCA
 
 from .classifier import EmbeddingClassifier
@@ -174,6 +176,15 @@ class InteractiveMappingTool:
             value="2024",
             description="Year:",
             layout={"display": "none"},  # Initially hidden
+        )
+
+        self.kernel_size_slider = IntSlider(
+            value=1,  # Default to 1x1
+            min=1,
+            max=9,  # up to 9x9
+            step=2, # Ensures odd numbers: 1, 3, 5, 7, 9
+            description='Label Kernel:',
+            style={'description_width': 'initial'}
         )
 
     def _create_map(self) -> None:
@@ -394,18 +405,39 @@ class InteractiveMappingTool:
             coords = kwargs.get("coordinates")
             if coords is None:
                 return
-            selected_class = self.class_dropdown.value
 
-            marker_key = tuple(coords)
-            if marker_key in self.markers:
+            lat, lon = coords
+            selected_class = self.class_dropdown.value
+            kernel_size = self.kernel_size_slider.value
+            
+            # Convert lat/lon to pixel row/col
+            center_row, center_col = transform.rowcol(self.mosaic_transform, lon, lat)
+            
+            # Check if click is within bounds
+            mosaic_height, mosaic_width, _ = self.embedding_mosaic.shape
+            if not (0 <= center_row < mosaic_height and 0 <= center_col < mosaic_width):
                 with self.output_log:
                     self.output_log.clear_output(wait=True)
-                    print(
-                        "A point already exists at this exact location. Click it to remove."
-                    )
+                    print("Clicked outside the bounds of the embedding mosaic.")
                 return
 
-            self.training_points.append((coords, selected_class))
+            # Calculate kernel bounds
+            radius = (kernel_size - 1) // 2
+            row_start = max(0, center_row - radius)
+            row_end = min(mosaic_height, center_row + radius + 1)
+            col_start = max(0, center_col - radius)
+            col_end = min(mosaic_width, center_col + radius + 1)
+
+            points_to_add = []
+            for r in range(row_start, row_end):
+                for c in range(col_start, col_end):
+                    # Convert each pixel back to lat/lon
+                    px_lon, px_lat = transform.xy(self.mosaic_transform, r, c)
+                    points_to_add.append(([px_lat, px_lon], selected_class))
+            
+            # Add the points to the main list
+            self.training_points.extend(points_to_add)            
+            marker_key = tuple(coords)
             pin_color = self.get_or_assign_color_for_class(selected_class)
             marker = CircleMarker(
                 location=coords,
@@ -687,12 +719,14 @@ class InteractiveMappingTool:
         new_class_controls = HBox([self.new_class_text, self.add_class_button])
         opacity_controls = HBox([self.opacity_toggle, self.opacity_slider])
         basemap_controls = VBox([self.basemap_selector, self.year_selector])
+        kernel_controls = HBox([self.kernel_size_slider]) 
         controls = VBox(
             [
                 basemap_controls,
                 class_controls,
                 new_class_controls,
                 opacity_controls,
+                kernel_controls,
             ]
         )
 
