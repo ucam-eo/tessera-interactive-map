@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from rasterio import Affine, transform
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.ensemble import RandomForestClassifier
 from tqdm import tqdm
 
 
@@ -50,6 +51,7 @@ class EmbeddingClassifier:
             embedding_mosaic.shape
         )
         self.model = None
+        self.model_name = None
         self.class_index_map = {}
         self.unique_class_names = []
 
@@ -95,26 +97,36 @@ class EmbeddingClassifier:
         return np.array(X_train), np.array(y_train), validation_info
 
     def train_classifier(
-        self, X_train: np.ndarray, y_train: np.ndarray, k: Optional[int] = None
+        self, X_train: np.ndarray, y_train: np.ndarray, model_name: str = "knn", model_params: Optional[dict] = None
     ) -> int:
         """
-        Train k-NN classifier.
+        Train a specified classifier.
 
         Args:
             X_train (np.ndarray): Training features
             y_train (np.ndarray): Training labels
-            k (int): Number of neighbors (defaults to min(5, n_samples))
-
-        Returns:
-            int: Number of neighbors used for training
+            model_name (str): The name of the model to use ('knn', 'rf', etc.)
+            model_params (dict): Optional parameters to pass to the model constructor.
         """
-        if k is None:
-            k = min(5, len(X_train))
+        model_params = model_params or {}
+        self.model_name = model_name
 
-        self.model = KNeighborsClassifier(n_neighbors=k, weights="distance")
+        if model_name == 'knn':
+            k = model_params.get('k', min(5, len(X_train)))
+            print(f"Training k-NN classifier with k={k}...")
+            self.model = KNeighborsClassifier(n_neighbors=k, weights="distance")
+        
+        elif model_name == 'rf':
+            n_estimators = model_params.get('n_estimators', 100)
+            print(f"Training Random Forest with {n_estimators} estimators...")
+            self.model = RandomForestClassifier(n_estimators=n_estimators, n_jobs=-1, random_state=42)
+            
+        else:
+            raise ValueError(f"Unknown model: {model_name}")
+            
         self.model.fit(X_train, y_train)
 
-        return k
+        print("Model training complete.")
 
     def classify_mosaic(
         self, batch_size: int = 15000, progress_callback: Optional[Callable] = None
