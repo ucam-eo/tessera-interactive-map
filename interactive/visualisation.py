@@ -120,6 +120,15 @@ class InteractiveMappingTool:
             value=self.class_color_map.get(self.class_dropdown.value, "#FFFFFF"),
             disabled=False,
         )
+      
+        self.vis_mode_selector = Dropdown(
+            options=['Standard', 'Confidence (Opacity)', 'Uncertainty (Threshold)'],
+            value='Standard', description='Vis Mode:', layout={'width': 'max-content'}
+        )
+        self.confidence_slider = FloatSlider(
+            value=0.7, min=0.1, max=1.0, step=0.05, description='Threshold:',
+            layout={'display': 'none'} # hidden until relevant
+        )
 
         self.opacity_toggle = ToggleButton(
             value=True, description="Show Embedding", button_style="info"
@@ -546,7 +555,7 @@ class InteractiveMappingTool:
 
                 selected_model_display = self.model_selector.value
                 model_name_map = {
-                    'k-Nearest Neighbors': 'knn',
+                    'kNN': 'knn',
                     'Random Forest': 'rf'
                 }
                 model_key = model_name_map.get(selected_model_display)
@@ -561,16 +570,28 @@ class InteractiveMappingTool:
 
                 # classify the entire mosaic
                 print("\nClassifying pixels...")
-                classification_result = self.embedding_classifier.classify_mosaic(
+                classification_result, confidence_map = self.embedding_classifier.classify_mosaic(
                     batch_size=15000
                 )
 
+                # Get visualization settings from the UI
+                vis_mode = self.vis_mode_selector.value
+                mode_map = {
+                    'Standard': 'standard',
+                    'Confidence (Opacity)': 'confidence_opacity',
+                    'Uncertainty (Threshold)': 'threshold'
+                }
+                vis_mode_key = mode_map.get(vis_mode)
+                confidence_threshold = self.confidence_slider.value
+
                 # create visualization
                 print("Creating visualization of the classification result...")
-                classification_data_url = (
-                    self.embedding_classifier.create_visualization(
-                        classification_result, self.class_color_map
-                    )
+                classification_data_url = self.embedding_classifier.create_visualization(
+                    classification_result,
+                    self.class_color_map,
+                    confidence_map=confidence_map,
+                    mode=vis_mode_key,
+                    threshold=confidence_threshold
                 )
 
                 # display results on map
@@ -726,6 +747,12 @@ class InteractiveMappingTool:
         self.save_button.on_click(self.on_save_button_clicked)
         self.load_button.on_click(self.on_load_button_clicked)
         self.classify_button.on_click(self.on_classify_button_clicked)
+        def on_vis_mode_change(change):
+            if change.new == 'Uncertainty (Threshold)':
+                self.confidence_slider.layout.display = 'flex'
+            else:
+                self.confidence_slider.layout.display = 'none'
+        self.vis_mode_selector.observe(on_vis_mode_change, names='value')
 
     def _create_layout(self):
         """Create the layout for the interactive mapping tool."""
@@ -765,16 +792,28 @@ class InteractiveMappingTool:
             flex="1", margin="0 0 0 20px", overflow="auto"
         )
 
-        buttons = HBox(
-            [
-                self.model_selector,
-                self.classify_button,
-                self.clear_pins_button,
-                self.clear_classification_button,
-            ]
+        vis_controls = VBox(
+            [self.vis_mode_selector, self.confidence_slider],
+            layout=Layout(margin='0 10px 0 10px')
         )
+        
+        action_box = HBox(
+            [self.model_selector, vis_controls, self.classify_button],
+            layout=Layout(align_items='center') 
+        )
+
+        clear_buttons = HBox(
+            [self.clear_pins_button, self.clear_classification_button]
+        )
+        
+        bottom_controls_row = HBox(
+            [action_box, clear_buttons],
+            layout=Layout(justify_content='space-between', width='100%', margin='10px 0 0 0')
+        )
+
+        # File controls for saving/loading
         file_controls = HBox([self.filename_text, self.save_button, self.load_button])
-        self.ui = VBox([top_bar, self.m, buttons, file_controls, self.output_log])
+        self.ui = VBox([top_bar, self.m, bottom_controls_row, file_controls, self.output_log])
 
     def display(self) -> None:
         """Display the interactive mapping tool."""
