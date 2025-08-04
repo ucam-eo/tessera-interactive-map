@@ -212,7 +212,7 @@ class TesseraUtils:
 
     def fetch_embedding_metadata(self, lat: float, lon: float, target_year: int):
         """Fetch embedding and associated metadata for a single tile."""
-        embedding = self.tessera.get_embedding(lat, lon, year=target_year)  # (H, W, C)
+        embedding = self.tessera.fetch_embedding(lat, lon, year=target_year)  # (H, W, C)
         landmask_path = self.tessera._fetch_landmask(lat, lon, progressbar=False)
         with rasterio.open(landmask_path) as src:
             src_crs = src.crs
