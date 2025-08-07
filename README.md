@@ -30,11 +30,10 @@ This tool is designed to run in a local Python environment with git installed.
     ```
 
 4.  **Install Dependencies**:
-    The required packages are listed in `requirements.txt`. Additionally, you need to install the `geotessera` library directly from its Git repository.
+    The required packages are listed in `requirements.txt`.
 
     ```bash
     pip install -r requirements.txt
-    pip install git+https://github.com/ucam-eo/geotessera.git
     ```
     For jupyter lab, also run `python -m ipykernel install --user --name=tessera` to register the kernel
     

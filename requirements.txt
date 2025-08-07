@@ -5,3 +5,4 @@ ipyleaflet
 ipywidgets
 ipykernel
 rasterio
+geotessera
