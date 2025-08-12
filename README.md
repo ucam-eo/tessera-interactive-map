@@ -35,7 +35,7 @@ This tool is designed to run in a local Python environment with git installed.
     ```bash
     pip install -r requirements.txt
     ```
-    For jupyter lab, also run `python -m ipykernel install --user --name=tessera` to register the kernel
+    For jupyter lab, also run `python -m ipykernel install --user --name=venv` to register the kernel
     
 ## How to Run
 
@@ -48,12 +48,9 @@ This tool is designed to run in a local Python environment with git installed.
 3.  **Run the Cells**:
     The notebook is organized into sequential steps. Run each cell in order from top to bottom.
 
-    -   **Step 1: Setup**: Defines the Region of Interest (ROI) by setting latitude/longitude boundaries.
-    -   **Step 2: Data Fetching & Visualization**: Downloads the required Tessera embedding tiles for your ROI, stitches them together, and uses PCA to generate the false color image. This step may take a while.
-    -   **Step 3: Interactive UI**: This is the main interface. It displays the map, the embedding overlay, and all the widgets.
-    -   **Step 4: Classification Logic**: This cell defines the function that is triggered when you click the "Classify" button. **You only need to run this cell once** to define the function.
-
-    Note: run all four stages, it's necessary to run step 4 for the classification to work even if the map appears at stage 3.
+    -   **Step 1: Setup**: Loads packages. 
+    -   **Step 2: Region of Interest**: Defines the Region of Interest (ROI) by setting latitude/longitude boundaries.
+    -   **Step 3: Interactive UI**: Downloads the Tessera embedding tiles for your ROI, stitches them together, and uses PCA to generate the false color image. This step may take a while. This is the main interface. After everything is done, it displays the map, the embedding overlay, and all the widgets.
     
 ## How to Use the Tool
 
