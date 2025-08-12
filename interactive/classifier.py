@@ -130,7 +130,7 @@ class EmbeddingClassifier:
 
     def classify_mosaic(
         self, batch_size: int = 15000, progress_callback: Optional[Callable] = None
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Classify the entire mosaic using the trained model.
 
@@ -139,14 +139,19 @@ class EmbeddingClassifier:
             progress_callback (Callable): Optional callback function for progress updates
 
         Returns:
-            numpy.ndarray: Classification result of shape (height, width)
+            tuple[numpy.ndarray, numpy.ndarray]: 
+                - classification_result of shape (height, width)
+                - confidence_map of shape (height, width)
         """
         if self.model is None:
             raise ValueError("Model must be trained before classification")
+        if not hasattr(self.model, "predict_proba"):
+            raise TypeError(f"The selected model '{self.model_name}' does not support probability estimates.")
         # reshape array to 2D for batch processing
         all_pixels = self.embedding_mosaic.reshape(-1, self.num_channels)
         n_pixels = all_pixels.shape[0]
-        predicted_labels = np.zeros(n_pixels, dtype=np.uint8)
+
+        all_probabilities = np.zeros((n_pixels, len(self.unique_class_names)), dtype=np.float32)
 
         # process in batches with progress tracking
         total_formatted = format_number(n_pixels)
@@ -159,32 +164,39 @@ class EmbeddingClassifier:
         ) as pbar:
             for i in range(0, n_pixels, batch_size):
                 end = min(i + batch_size, n_pixels)
-                predicted_labels[i:end] = self.model.predict(all_pixels[i:end, :])
+                all_probabilities[i:end] = self.model.predict_proba(all_pixels[i:end, :])
                 pbar.update(end - i)
 
                 if progress_callback:
                     progress_callback(i + (end - i), n_pixels)
 
         # reshape back to image dimensions for visualization
-        classification_result = predicted_labels.reshape(
-            self.mosaic_height, self.mosaic_width
-        )
+        classification_result = np.argmax(all_probabilities, axis=1)
+        confidence_map = np.max(all_probabilities, axis=1)
+
+        # Reshape back to image dimensions
+        classification_result = classification_result.reshape(self.mosaic_height, self.mosaic_width)
+        confidence_map = confidence_map.reshape(self.mosaic_height, self.mosaic_width)
 
         # clean up variable to save memory
-        del all_pixels
-
-        return classification_result
+        del all_pixels, all_probabilities
+        return classification_result, confidence_map
 
     def create_visualization(
-        self, classification_result: np.ndarray, color_map: dict[str, str]
+        self,
+        classification_result: np.ndarray,
+        color_map: dict[str, str],
+        confidence_map: Optional[np.ndarray] = None,
+        mode: str = 'standard',
+        threshold: float = 0.7
     ) -> str:
         """
         Create visualization colored by class of results.
 
         Args:
-            classification_result (np.ndarray): 2D array of classification labels
-            color_map (dict[str, str]): Dictionary mapping class names to colors
-
+            confidence_map (np.ndarray): 2D array of model confidence scores (0.0 to 1.0)
+            mode (str): standard, confidence_opacity, or threshold
+            threshold (float): Confidence threshold for the threshold mode
         Returns:
             str: Base64-encoded PNG image data URL
         """
@@ -194,13 +206,27 @@ class EmbeddingClassifier:
         ]
         cmap = mcolors.ListedColormap(color_list)
         norm = mcolors.Normalize(vmin=0, vmax=len(self.unique_class_names) - 1)
+        colored_result_rgb = cmap(norm(classification_result))[:, :, :3]
 
-        # apply colormap to classification result
-        colored_result = cmap(norm(classification_result))
+        if mode == 'confidence_opacity' and confidence_map is not None:
+            # Use confidence as the alpha channel. High confidence = opaque.
+            alpha_channel = (confidence_map * 255).astype(np.uint8)
+            # Add the alpha channel to the RGB image
+            rgba_image = np.dstack((colored_result_rgb * 255, alpha_channel)).astype(np.uint8)
+
+        elif mode == 'threshold' and confidence_map is not None:
+            # Create a special color for uncertain pixels (e.g., grey)
+            uncertain_color = np.array([0.5, 0.5, 0.5]) # Grey
+            # Where confidence is low, replace the color with the uncertain color
+            colored_result_rgb[confidence_map < threshold] = uncertain_color
+            rgba_image = (colored_result_rgb * 255).astype(np.uint8)
+
+        else: # Standard mode
+            rgba_image = (colored_result_rgb * 255).astype(np.uint8)
 
         # convert to base64 PNG for saving
         buffer = io.BytesIO()
-        plt.imsave(buffer, colored_result, format="png")
+        plt.imsave(buffer, rgba_image, format="png")
         buffer.seek(0)
         b64_data = base64.b64encode(buffer.read()).decode("utf-8")
 
