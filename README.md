@@ -59,7 +59,7 @@ This tool is designed to run in a local Python environment with git installed.
 
 ### 1. Launch the Notebook
 
-Once the notebook opens, you're ready to begin.
+Once the notebook opens, you're ready to begin. Run the top cell.
 
 ![Notebook Opened](img/step1.png)
 
@@ -67,19 +67,18 @@ Once the notebook opens, you're ready to begin.
 
 ### 2. Set the Region of Interest
 
-Use a tool like [BBox Finder](http://bboxfinder.com) to get coordinates and define your bounding box.
+Run the ROI selector cell. Define your bounding box with the tool by dragging a square.
 
 ![Set Region](img/step2.png)
 
 ---
 
-### 3. Run All Cells
+### 3. Run Cells
 
-Click `Run All` to execute all the cells in the notebook. This may take a couple of minutes.
+Click `Run` to execute the cell below the ROI selector in the notebook. This may take a couple of minutes.
 
-![Run All Cells](img/step3.png)
+![Run the cell and wait for it](img/step3.png)
 
-![Wait for it](img/step3-2.png)
 
 ---
 
@@ -115,13 +114,12 @@ Clicking a pin again will remove it.
 Once you’ve added pins from **at least two classes**, click the **Classify** button to begin the classification.
 
 ![Start Classification](img/step7.png)
-![Wait for Classification](img/step7-2.png)
 
 ---
 
 ### 8. View the Classification Map
 
-After processing, a classification map based on your input will appear.
+After processing, a classification map based on your input will appear. You may iterate on this by adding or removing labels or classes and reclassifying.
 
 ![Classification Result](img/step8.png)
 
