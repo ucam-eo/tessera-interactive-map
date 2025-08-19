@@ -1,4 +1,4 @@
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple, Dict
 
 import geopandas as gpd
 import numpy as np
@@ -6,135 +6,157 @@ import pandas as pd
 import rasterio
 from geotessera import GeoTessera
 from pyproj import Transformer
-from shapely.geometry import box
+from shapely.geometry import box, Point
+from rasterio.transform import rowcol
 
 
 class GeoTesseraWrapper:
+    """
+    A wrapper around GeoTessera to provide convenient methods for 
+    extracting embeddings from labeled points and ROI-based tile fetching.
+    """
+    
     def __init__(self, year: int = 2024):
-        """
-        Initializes the classifier manager.
-        Args:
-            year: The year of Tessera embeddings to use.
-        """
+        """Initialize wrapper with a specific year."""
         self.gt = GeoTessera()
         self.year = year
 
     def fetch_tiles_for_roi(self, roi_gdf: gpd.GeoDataFrame):
-        # Find tiles intersecting the ROI
+        """Fetch tiles for a region of interest using the new bbox-based API."""
         if roi_gdf.crs != "EPSG:4326":
             roi_gdf = roi_gdf.to_crs("EPSG:4326")
-        unified_geom = roi_gdf.unary_union
-
-        tile_list = []
-        for t_year, lat, lon in self.gt.list_available_embeddings():
-            if t_year != self.year:
-                continue
-            if unified_geom.intersects(box(lon, lat, lon + 0.1, lat + 0.1)):
-                tile_list.append((lat, lon))
-
+        
+        # Get bounding box from ROI
+        bounds = roi_gdf.total_bounds  # [min_x, min_y, max_x, max_y]
+        bbox = (bounds[0], bounds[1], bounds[2], bounds[3])  # (min_lon, min_lat, max_lon, max_lat)
+        
+        print(f"Fetching tiles in bbox: {bbox}")
+        
+        # Use new API to get tiles in bbox - returns (tile_lon, tile_lat, ...)
+        tiles = self.gt.fetch_embeddings(bbox, self.year)
+        tile_list = [(lat, lon) for lon, lat, _, _, _ in tiles]
+        
+        print(f"Found {len(tile_list)} tiles in ROI")
         return tile_list
 
     def extract_embeddings_for_points(
         self, labeled_points: list
     ) -> Tuple[pd.DataFrame, Set[Tuple[float, float]]]:
         """
-        Extracts Tessera embeddings by definitively testing each point against
-        nearby candidate tiles.
+        Extracts Tessera embeddings using batch processing for efficient tile fetching.
+        Uses the new API to fetch all needed tiles at once based on point locations.
         """
-        print("Fetching list of all available tiles...")
-        available_tiles = [
-            (lat, lon)
-            for t_year, lat, lon in self.gt.list_available_embeddings()
-            if t_year == self.year
-        ]
-        if not available_tiles:
-            raise ValueError(
-                f"No tiles are available at all \
-                for the year {self.year}."
-            )
-        print(
-            f"Found {len(available_tiles)} total available tiles \
-            for {self.year}."
-        )
-
+        if not labeled_points:
+            print("No labeled points provided.")
+            return pd.DataFrame(), set()
+        
+        print(f"Processing {len(labeled_points)} labeled points using batch processing...")
+        
+        # Calculate bounding box for all points
+        point_coords = [(p['lat'], p['lon']) for p in labeled_points]
+        lats = [coord[0] for coord in point_coords]
+        lons = [coord[1] for coord in point_coords]
+        
+        # Add small buffer to ensure we get all relevant tiles
+        buffer = 0.05  # ~5km buffer
+        bbox = (min(lons) - buffer, min(lats) - buffer, 
+                max(lons) + buffer, max(lats) + buffer)
+        
+        print(f"Fetching tiles in bbox: ({bbox[0]:.3f}, {bbox[1]:.3f}, {bbox[2]:.3f}, {bbox[3]:.3f})")
+        
+        # Fetch all needed tiles at once using new batch API - returns (tile_lon, tile_lat, ...)
+        try:
+            tiles_data = self.gt.fetch_embeddings(bbox, self.year)
+        except Exception as e:
+            print(f"Error fetching tiles: {e}")
+            return pd.DataFrame(), set()
+        
+        if not tiles_data:
+            print("No tiles found in the specified region.")
+            return pd.DataFrame(), set()
+        
+        print(f"Successfully fetched {len(tiles_data)} tiles")
+        
+        # Create spatial index of tiles with their data
+        tile_cache = {}
+        for tile_lon, tile_lat, embedding, crs, transform in tiles_data:
+            tile_key = (tile_lat, tile_lon)
+            tile_cache[tile_key] = {
+                'embedding': embedding,
+                'crs': crs,
+                'transform': transform
+            }
+        
+        # Process all points against the cached tiles
         training_data = []
-        embedding_cache = {}
-        processed_tiles = set()  # To store the unique (lat, lon) of tiles
-
+        processed_tiles = set()
+        
         for i, point in enumerate(labeled_points):
-            print(
-                f"\nProcessing point {i+1}/{len(labeled_points)} at \
-                    ({point['lat']:.4f}, {point['lon']:.4f})..."
-            )
-
-            point_lon, point_lat = point["lon"], point["lat"]
-            candidate_tiles = [
-                (t_lat, t_lon)
-                for t_lat, t_lon in available_tiles
-                if (abs(t_lat - point_lat) < 0.2 and abs(t_lon - point_lon) < 0.2)
-            ]
-
-            if not candidate_tiles:
-                print(f" > Warning: No candidate tiles found near this point.")
-                continue
-
+            if i % 50 == 0:  # Progress update every 50 points
+                print(f"Processing point {i+1}/{len(labeled_points)}...")
+            
+            point_lat, point_lon = point['lat'], point['lon']
             found_match = False
-            for tile_lat, tile_lon in candidate_tiles:
+            
+            # Check each cached tile to find which contains this point
+            for tile_key, tile_data in tile_cache.items():
+                tile_lat, tile_lon = tile_key
+                embedding = tile_data['embedding']
+                crs = tile_data['crs']
+                transform = tile_data['transform']
+                
                 try:
-                    landmask_path = self.gt._fetch_landmask(
-                        lat=tile_lat, lon=tile_lon, progressbar=False
-                    )
-                    with rasterio.open(landmask_path) as tile_raster:
-                        h, w = tile_raster.height, tile_raster.width
-
-                        transformer = Transformer.from_crs(
-                            "EPSG:4326", tile_raster.crs, always_xy=True
-                        )
-                        px, py = transformer.transform(point_lon, point_lat)
-                        row, col = tile_raster.index(px, py)
-
-                        if 0 <= row < h and 0 <= col < w:
-                            # If we are here, this is the one and only correct tile.
-                            #print(
-                            #    f"  > Match found! Point belongs to tile ({tile_lat:.2f}, {tile_lon:.2f})."
-                            #)
-
-                            tile_key = (tile_lat, tile_lon)
-                            if tile_key not in embedding_cache:
-                                embedding_cache[tile_key] = self.gt.fetch_embedding(
-                                    lat=tile_lat, lon=tile_lon, year=self.year
-                                )
-
-                            embedding_array = embedding_cache[tile_key]
-                            embedding_vector = embedding_array[row, col]
-
-                            training_data.append(
-                                {"label": point["label"], "embedding": embedding_vector}
-                            )
-                            processed_tiles.add(tile_key)
-                            found_match = True
-                            # Crucially, break the inner loop once the match is found.
-                            break
-                        # ---------------------------------------------
-
+                    # Transform point coordinates to tile's CRS
+                    transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+                    px, py = transformer.transform(point_lon, point_lat)
+                    
+                    # Get pixel coordinates
+                    row, col = rowcol(transform, px, py)
+                    
+                    # Check if point is within tile bounds
+                    h, w = embedding.shape[:2]
+                    if 0 <= row < h and 0 <= col < w:
+                        # Extract embedding vector for this point
+                        embedding_vector = embedding[row, col]
+                        
+                        training_data.append({
+                            'label': point['label'],
+                            'embedding': embedding_vector,
+                            'lat': point_lat,
+                            'lon': point_lon,
+                            'tile_lat': tile_lat,
+                            'tile_lon': tile_lon
+                        })
+                        
+                        processed_tiles.add(tile_key)
+                        found_match = True
+                        break  # Found the correct tile, no need to check others
+                        
                 except Exception as e:
-                    # This will now only catch unexpected errors, not out-of-bounds checks.
-                    print(
-                        f"  ! An unexpected error occurred while testing tile ({tile_lat:.2f}, {tile_lon:.2f}): {e}"
-                    )
-
+                    # Skip this tile if there's an error (e.g., CRS transformation issues)
+                    continue
+            
             if not found_match:
-                print(
-                    f"  > Warning: Could not find a definitive matching tile for this point after checking {len(candidate_tiles)} candidates."
-                )
-
+                print(f"Warning: No matching tile found for point at ({point_lat:.4f}, {point_lon:.4f})")
+        
         if not training_data:
-            print("\nNo embeddings were extracted.")
-            return pd.DataFrame()
-
-        print("\nExtraction complete. Creating DataFrame.")
-        labels = [d["label"] for d in training_data]
-        embeddings = np.array([d["embedding"] for d in training_data])
+            print("No embeddings were extracted.")
+            return pd.DataFrame(), set()
+        
+        print(f"\nExtraction complete! Extracted {len(training_data)} embeddings from {len(processed_tiles)} tiles.")
+        
+        # Create DataFrame
+        labels = [d['label'] for d in training_data]
+        embeddings = np.array([d['embedding'] for d in training_data])
+        
+        # Create DataFrame with embedding columns
         df = pd.DataFrame(embeddings, columns=[f"emb_{i}" for i in range(128)])
         df.insert(0, "label", labels)
+        
+        # Add optional metadata columns
+        df['point_lat'] = [d['lat'] for d in training_data]
+        df['point_lon'] = [d['lon'] for d in training_data]
+        df['tile_lat'] = [d['tile_lat'] for d in training_data]
+        df['tile_lon'] = [d['tile_lon'] for d in training_data]
+        
         return df, processed_tiles

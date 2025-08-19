@@ -5,4 +5,6 @@ ipyleaflet
 ipywidgets
 ipykernel
 rasterio
-geotessera
+geotessera>=0.5.0
+geopandas
+pyyaml
