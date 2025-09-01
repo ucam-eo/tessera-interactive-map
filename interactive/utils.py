@@ -5,13 +5,14 @@ import numpy as np
 import rasterio
 
 # geospatial
+import sys
 from geotessera import GeoTessera
-from geotessera.registry_utils import get_all_blocks_in_range
 from rasterio import Affine
 from rasterio.enums import Resampling
 from rasterio.io import MemoryFile
 from rasterio.merge import merge
 from rasterio.warp import calculate_default_transform, reproject
+from rasterio.transform import from_bounds
 from tqdm.auto import tqdm
 
 # custom
@@ -157,72 +158,32 @@ class TesseraUtils:
             raise ValueError("Invalid bounding box coordinates")
         lat_min, lat_max = min(lat_coords), max(lat_coords)
         lon_min, lon_max = min(lon_coords), max(lon_coords)
-        roi_bounds = (
-            lon_min,
-            lat_min,
-            lon_max,
-            lat_max,
-        )  # (min_lon, min_lat, max_lon, max_lat)
+        bbox = (lon_min, lat_min, lon_max, lat_max)  # (min_lon, min_lat, max_lon, max_lat)
 
-        print(f"\nSearching for tiles in ROI: {roi_bounds} for year {target_year}")
+        print(f"\nSearching for tiles in ROI: {bbox} for year {target_year}")
 
-        # find all registry blocks that intersect the ROI
-        intersecting_blocks = get_all_blocks_in_range(lon_min, lon_max, lat_min, lat_max)
-        print(f"ROI intersects with {len(intersecting_blocks)} registry block(s). Loading them...")
-
-        # lazily load the registry for each intersecting block
-        # this populates the internal list of available embeddings in the GeoTessera object
-        for block_lon, block_lat in intersecting_blocks:
-            try:
-                # the _ensure_block_loaded method needs any coordinate within the block
-                # the block's lower-left corner coordinate works for this
-                self.tessera._ensure_block_loaded(year=target_year, lon=block_lon, lat=block_lat)
-            except Exception as e:
-                # this might happen if a block registry is missing on the server for the given year
-                print(f"Warning: Could not load block for ({block_lon}, {block_lat}) in year {target_year}: {e}")
-
-        print("Required registry blocks loaded.")
-
-        # find tiles in ROI by searching the now-populated list of available embeddings
-        tiles_to_merge = []
-        for emb_year, lat, lon in self.tessera._available_embeddings:
-            if emb_year != target_year:
-                continue
-            tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat = (
-                lon,
-                lat,
-                lon + 0.1,
-                lat + 0.1,
-            )
-            if (
-                tile_min_lon < roi_bounds[2]
-                and tile_max_lon > roi_bounds[0]
-                and tile_min_lat < roi_bounds[3]
-                and tile_max_lat > roi_bounds[1]
-            ):
-                tiles_to_merge.append((lat, lon))
+        # Get tiles that would be available for this bbox (without downloading)
+        tiles_to_download = self.tessera.registry.load_blocks_for_region(bbox, target_year)
+        tiles_to_merge = [(lat, lon) for lon, lat in tiles_to_download]
 
         if not tiles_to_merge:
-            raise ValueError(
-                f"\nNo embedding tiles found for the specified ROI in year {target_year}"
-            )
+          raise ValueError(
+            f"\nNo embedding tiles found for the specified ROI in year {target_year}"
+          )
         print(f"\nFound {len(tiles_to_merge)} tiles to merge.")
-
         return tiles_to_merge
 
     def fetch_embedding_metadata(self, lat: float, lon: float, target_year: int):
         """Fetch embedding and associated metadata for a single tile."""
-        embedding = self.tessera.fetch_embedding(lat, lon, year=target_year)  # (H, W, C)
-        landmask_path = self.tessera._fetch_landmask(lat, lon, progressbar=False)
-        with rasterio.open(landmask_path) as src:
-            src_crs = src.crs
-            src_transform = src.transform
-            src_height, src_width = src.height, src.width
-            src_bounds = src.bounds
+        embedding, src_crs, src_transform = self.tessera.fetch_embedding(lon, lat, year=target_year)
+        
+        src_height, src_width = embedding.shape[:2]
+        from rasterio.transform import array_bounds
+        src_bounds = array_bounds(src_height, src_width, src_transform)
 
         return (
             embedding,
-            landmask_path,
+            None,  # landmask_path no longer needed directly
             src_crs,
             src_transform,
             src_height,
@@ -420,7 +381,7 @@ class TesseraUtils:
         self, lat_coords: tuple, lon_coords: tuple, target_year: Optional[int] = None
     ) -> Tuple[np.ndarray, object]:
         """
-        Complete workflow: check tiles, reproject, and merge into mosaic.
+        Complete workflow: fetch embeddings and create mosaic using GeoTessera.
 
         Args:
             lat_coords (tuple): Tuple of latitude coordinates
@@ -430,13 +391,33 @@ class TesseraUtils:
         Returns:
             Tuple of (embedding_mosaic, mosaic_transform)
         """
-        # find tiles in ROI
-        tiles_to_merge = self.check_tessera_tiles(lat_coords, lon_coords, target_year)
+        target_year = target_year if target_year is not None else self.config.target_year
+        
+        # validate and get bounding box
+        if not check_bbox_valid(lat_coords, lon_coords):
+            raise ValueError("Invalid bounding box coordinates")
+        lat_min, lat_max = min(lat_coords), max(lat_coords)
+        lon_min, lon_max = min(lon_coords), max(lon_coords)
+        bbox = (lon_min, lat_min, lon_max, lat_max)  # (min_lon, min_lat, max_lon, max_lat)
 
-        # reproject tiles
+        print(f"\nFetching embeddings for ROI: {bbox} for year {target_year}")
+        
+        def progress_callback(current, total, status=None):
+            if status:
+                print(f"\r{status} ({current}/{total})", end="", flush=True)
+            else:
+                print(f"\rProgress: {current}/{total}", end="", flush=True)
+            if current == total:
+                print()  # New line when complete
+        
+        tiles_data = self.tessera.fetch_embeddings(bbox, target_year, progress_callback)
+        
+        if not tiles_data:
+            raise ValueError(f"No embedding tiles found for the specified ROI in year {target_year}")
+        
+        print(f"Fetched {len(tiles_data)} tiles. Creating mosaic...")
+        tiles_to_merge = [(lat, lon) for lon, lat, _, _, _ in tiles_data]
         reprojected_tiles = self.reproject_tessera_tiles(tiles_to_merge)
-
-        # merge tiles
         embedding_mosaic, mosaic_transform = self.merge_tiles(reprojected_tiles)
-
+        
         return embedding_mosaic, mosaic_transform

@@ -122,22 +122,15 @@ def classify_single_tile_worker(args: tuple):
     # This unpacks the 6 arguments passed from the main function
     tile_lat, tile_lon, year, model, output_dir, gt = args
     try:
-        # Fetch and classify
-        embedding_array = gt.fetch_embedding(
-            lat=tile_lat, lon=tile_lon, year=year, progressbar=False
+        # Fetch and classify - new API returns (embedding, crs, transform)
+        embedding_array, src_crs, src_transform = gt.fetch_embedding(
+            lon=tile_lon, lat=tile_lat, year=year, progress_callback=None
         )
         h, w, c = embedding_array.shape
         class_map = model.predict(embedding_array.reshape(-1, c)).reshape(h, w)
 
         # Convert to a standard, saveable data type
         class_map = class_map.astype(np.uint8)
-
-        # Get georeferencing info
-        landmask_path = gt._fetch_landmask(
-            lat=tile_lat, lon=tile_lon, progressbar=False
-        )
-        with rasterio.open(landmask_path) as landmask_src:
-            src_crs, src_transform = landmask_src.crs, landmask_src.transform
 
         # Save the file
         output_path = Path(output_dir) / f"classified_{tile_lat:.2f}_{tile_lon:.2f}.tif"
