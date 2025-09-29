@@ -2,6 +2,7 @@ import base64
 import io
 import json
 from functools import partial
+import os
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -207,11 +208,8 @@ class InteractiveMappingTool:
         map_layout = Layout(height="600px", width="100%")
         self.m = Map(
             layers=(self.current_basemap,),
-            center=(
-                (self.min_lat + self.max_lat) / 2,
-                (self.min_lon + self.max_lon) / 2,
-            ),
-            zoom=12,
+            center=(52.2053, 0.1218), 
+            zoom=13,
             layout=map_layout,
         )
         self.image_overlay = ImageOverlay(
@@ -997,12 +995,38 @@ class BoundingBoxSelector:
         self.bbox_too_small = False
         self.bbox_too_large = False
 
-        # create world map
+        state_file = "session/map_state.json"
+
+        # Saving the session 
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r") as f:
+                    state = json.load(f)
+                center = tuple(state["center"])
+                zoom = state["zoom"]
+            except (KeyError, ValueError):
+                # fallback to Cambridge in case file is corrupted
+                center, zoom = (52.2053, 0.1218), 13
+        else:
+            # default to Cambridge
+            center, zoom = (52.2053, 0.1218), 13
+
+            # make sure session folder exists and create the file
+            os.makedirs("session", exist_ok=True)
+            state = {"center": center, "zoom": zoom}
+            with open(state_file, "w") as f:
+                json.dump(state, f)
+
+        # create map
         self.map = Map(
-            center=(20, 0),  # center on world view
-            zoom=2,
+            center=center,
+            zoom=zoom,
             layout={"width": "100%", "height": "500px"},
         )
+
+        # save state on user interaction
+        self.map.observe(self._save_map_state, names=["center", "zoom"])
+        self._state_file = state_file
 
         # create draw control for rectangles alone with improved settings
         self.draw_control = DrawControl(
@@ -1185,3 +1209,12 @@ class BoundingBoxSelector:
             dict (dict | None): Dictionary with min_lat, max_lat, min_lon, max_lon keys or None
         """
         return self.bbox_coords
+    
+    
+    def _save_map_state(self, change=None):
+        state = {
+            "center": self.map.center,
+            "zoom": self.map.zoom,
+        }
+        with open(self._state_file, "w") as f:
+            json.dump(state, f)
