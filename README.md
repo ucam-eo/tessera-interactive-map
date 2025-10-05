@@ -13,9 +13,15 @@ The tool allows a user to define an area of interest, visualize the high-dimensi
 -   **Live Classification**: Train a k-Nearest Neighbors model and classify the map with a click.
 -   **Iterative Refinement**: Add more pins to correct mistakes and re-run the classification for immediate (relatively) feedback.
 
-## Installation
+## Prerequisites
 
-This tool is designed to run in a local Python environment with git installed.
+Before installing and running the tool, make sure you have:
+- Python – install from [python.org
+](https://www.python.org/downloads/) (v13 tested)
+- Git – Install from [git-scm.com](https://git-scm.com/downloads)
+
+
+## Installation
 
 1.  **Clone the Repository**:
     ```bash
@@ -36,33 +42,29 @@ This tool is designed to run in a local Python environment with git installed.
     pip install -r requirements.txt
     ```
     For jupyter lab, also run `python -m ipykernel install --user --name=venv` to register the kernel
-    
-## How to Run
 
-1.  **Open the Project**:
-    Open the cloned repository folder in VS Code or Jupyter Notebook, or whatever else that runs ipynb files.
-
-2.  **Open the Notebook**:
-    Using the file browser on the left, find and open the main notebook file.
-
-3.  **Run the Cells**:
-    The notebook is organized into sequential steps. Run each cell in order from top to bottom.
-
-    -   **Step 1: Setup**: Loads packages. 
-    -   **Step 2: Region of Interest**: Defines the Region of Interest (ROI) by setting latitude/longitude boundaries.
-    -   **Step 3: Interactive UI**: Downloads the Tessera embedding tiles for your ROI, stitches them together, and uses PCA to generate the false color image. This step may take a while. This is the main interface. After everything is done, it displays the map, the embedding overlay, and all the widgets.
-    
 ## How to Use the Tool
 
-### 1. Launch the Notebook
+### 1. Open the Project
+Open the cloned repository folder in VS Code or Jupyter Notebook, or whatever else that runs ipynb files.
 
-Once the notebook opens, you're ready to begin. Run the top cell.
+---
+
+### 2. Launch the Notebook
+
+Using the file browser on the left, find and open the `app.ipynb` file.
 
 ![Notebook Opened](img/step1.png)
 
 ---
 
-### 2. Set the Region of Interest
+### 3. Initialize the Environment
+
+Once the notebook opens, you're ready to begin. Run the top cell to load the required packages and set up the environment.
+
+---
+
+### 4. Set the Region of Interest
 
 Run the ROI selector cell. Define your bounding box with the tool by dragging a square.
 
@@ -70,16 +72,15 @@ Run the ROI selector cell. Define your bounding box with the tool by dragging a 
 
 ---
 
-### 3. Run Cells
+### 5. Generate the Interactive Map
 
 Click `Run` to execute the cell below the ROI selector in the notebook. This may take a couple of minutes.
 
 ![Run the cell and wait for it](img/step3.png)
 
-
 ---
 
-### 4. Wait for the Map to Load
+### 6. Wait for the Map to Load
 
 Once processing completes, a map will appear in the notebook.
 
@@ -87,7 +88,7 @@ Once processing completes, a map will appear in the notebook.
 
 ---
 
-### 5. Select or Add a Class
+### 7. Select or Add a Class
 
 Use the class selector to pick an existing class or create a new one.
 You can customize the color using the color palette.
@@ -97,7 +98,7 @@ You can customize the color using the color palette.
 
 ---
 
-### 6. Label the Map
+### 8. Label the Map
 
 Click directly on the map to place pins for each class.
 Clicking a pin again will remove it.
@@ -106,7 +107,7 @@ Clicking a pin again will remove it.
 
 ---
 
-### 7. Start Classification
+### 9. Start Classification
 
 Once you’ve added pins from **at least two classes**, click the **Classify** button to begin the classification.
 
@@ -114,9 +115,8 @@ Once you’ve added pins from **at least two classes**, click the **Classify** b
 
 ---
 
-### 8. View the Classification Map
+### 10. View the Classification Map
 
 After processing, a classification map based on your input will appear. You may iterate on this by adding or removing labels or classes and reclassifying.
 
 ![Classification Result](img/step8.png)
-
