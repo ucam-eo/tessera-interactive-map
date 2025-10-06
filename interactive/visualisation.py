@@ -1022,6 +1022,7 @@ class BoundingBoxSelector:
             center=center,
             zoom=zoom,
             layout={"width": "100%", "height": "500px"},
+            scroll_wheel_zoom=True
         )
 
         # save state on user interaction
