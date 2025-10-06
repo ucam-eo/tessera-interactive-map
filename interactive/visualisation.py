@@ -1027,7 +1027,25 @@ class BoundingBoxSelector:
         # save state on user interaction
         self.map.observe(self._save_map_state, names=["center", "zoom"])
         self._state_file = state_file
+        
+        self.init_draw_controls()
 
+        # create output widgets
+        self.info_widget = HTML(
+            value="<b>Instructions:</b> Draw a rectangle on the map to select your bounding box."
+        )
+        self.coords_output = Output()
+
+        # create layout
+        self.widget = VBox(
+            [
+                self.info_widget,
+                self.map,
+                self.coords_output,
+            ]
+        )
+
+    def init_draw_controls(self):
         # create draw control for rectangles alone with improved settings
         self.draw_control = DrawControl(
             rectangle={
@@ -1052,21 +1070,6 @@ class BoundingBoxSelector:
 
         # set up event handlers
         self.draw_control.on_draw(self._on_draw)
-
-        # create output widgets
-        self.info_widget = HTML(
-            value="<b>Instructions:</b> Draw a rectangle on the map to select your bounding box."
-        )
-        self.coords_output = Output()
-
-        # create layout
-        self.widget = VBox(
-            [
-                self.info_widget,
-                self.map,
-                self.coords_output,
-            ]
-        )
 
     def _on_draw(
         self, target: DrawControl, action: str, geo_json: dict, **kwargs
@@ -1095,6 +1098,11 @@ class BoundingBoxSelector:
                 if self.visual_rectangle is not None:
                     self.map.remove_layer(self.visual_rectangle)
 
+                # removes the red rectangles from render by deleting the draw controls and reinstantiating them
+                # not the best way to do it, but the red recs are tied to the draw controls 
+                self.map.remove_layer(target)
+                self.init_draw_controls()
+
                 # extract coordinates from the drawn rectangle
                 coords = geo_json["geometry"]["coordinates"][0]
                 lons = [coord[0] for coord in coords]
@@ -1109,7 +1117,7 @@ class BoundingBoxSelector:
                     bounds=[(min_lat, min_lon), (max_lat, max_lon)],
                     color="#2f7d31",  # green color for selected rectangle
                     weight=3,
-                    fill_opacity=0.3,
+                    fill_opacity=0.4,
                     fill_color="#2f7d31",
                 )
 
