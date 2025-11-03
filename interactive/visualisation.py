@@ -423,8 +423,8 @@ class InteractiveMappingTool:
             selected_class = self.class_dropdown.value
             kernel_size = self.kernel_size_slider.value
             
-            # Convert lat/lon to pixel row/col
-            center_row, center_col = transform.rowcol(self.mosaic_transform, lon, lat)
+            # Convert lat/lon to pixel row/col (and round)
+            center_row, center_col = transform.rowcol(self.mosaic_transform, lon, lat, op=round)
             
             # Check if click is within bounds
             mosaic_height, mosaic_width, _ = self.embedding_mosaic.shape
@@ -444,8 +444,8 @@ class InteractiveMappingTool:
             points_to_add = []
             for r in range(row_start, row_end):
                 for c in range(col_start, col_end):
-                    # Convert each pixel back to lat/lon
-                    px_lon, px_lat = transform.xy(self.mosaic_transform, r, c)
+                    # Convert each pixel back to lat/lon with explicit center offset
+                    px_lon, px_lat = transform.xy(self.mosaic_transform, r, c, offset='center')
                     points_to_add.append(([px_lat, px_lon], selected_class))
             
             # Add the points to the main list
