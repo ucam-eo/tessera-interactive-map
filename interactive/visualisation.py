@@ -205,21 +205,46 @@ class InteractiveMappingTool:
 
     def _create_map(self) -> None:
         """Create the interactive map with basemap and overlay layers."""
+        import os, json
+
         map_layout = Layout(height="600px", width="100%")
+        state_file = "session/map_state.json"
+        os.makedirs("session", exist_ok=True)
+
+        # Try to load previous map state
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r") as f:
+                    state = json.load(f)
+                center = tuple(state.get("center", (52.2053, 0.1218)))
+                zoom = state.get("zoom", 13)
+                print(f"Restored map view from {state_file}: center={center}, zoom={zoom}")
+            except Exception as e:
+                # Defaulting to Cambridge, UK
+                print(f"Warning: failed to load map state ({e})")
+                center, zoom = (52.2053, 0.1218), 13
+        else:
+            center, zoom = (52.2053, 0.1218), 13
+
+        # Create the map 
         self.m = Map(
             layers=(self.current_basemap,),
-            center=(52.2053, 0.1218), 
-            zoom=13,
+            center=center,
+            zoom=zoom,
             layout=map_layout,
         )
+
         self.image_overlay = ImageOverlay(
             url=self.vis_data_url,
             bounds=self.vis_bounds,
             opacity=self.opacity_slider.value if self.opacity_toggle.value else 0.7,
         )
         self.m.add(self.image_overlay)
-
         print("Image overlay added to map.")
+
+        # --- Observe map movement & zoom changes ---
+        self._state_file = state_file
+        self.m.observe(self._save_map_state, names=["center", "zoom"])
 
     def update_legend(self) -> None:
         """Update the legend widget with current class colors."""
@@ -447,6 +472,8 @@ class InteractiveMappingTool:
                     # Convert each pixel back to lat/lon with explicit center offset
                     px_lon, px_lat = transform.xy(self.mosaic_transform, r, c, offset='center')
                     points_to_add.append(([px_lat, px_lon], selected_class))
+            
+            print("Transform units example: top-left x,y ->", transform.xy(self.mosaic_transform, 0, 0))
             
             # Add the points to the main list
             self.training_points.extend(points_to_add)            
@@ -980,6 +1007,19 @@ class InteractiveMappingTool:
         with self.output_log:
             print("Updated embedding visualization overlay")
             print(f"Bounds: ({south:.4f}, {west:.4f}) to ({north:.4f}, {east:.4f})")
+    def _save_map_state(self, change=None):
+        """Save current map center and zoom to session file."""
+        state = {
+            "center": self.m.center,
+            "zoom": self.m.zoom,
+        }
+        try:
+            with open(self._state_file, "w") as f:
+                json.dump(state, f)
+            # Debug print (optional):
+            # print(f"Saved map view: {state}")
+        except Exception as e:
+            print(f"Warning: could not save map state ({e})")
 
 
 class BoundingBoxSelector:
