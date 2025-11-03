@@ -473,8 +473,6 @@ class InteractiveMappingTool:
                     px_lon, px_lat = transform.xy(self.mosaic_transform, r, c, offset='center')
                     points_to_add.append(([px_lat, px_lon], selected_class))
             
-            print("Transform units example: top-left x,y ->", transform.xy(self.mosaic_transform, 0, 0))
-            
             # Add the points to the main list
             self.training_points.extend(points_to_add)            
             marker_key = tuple(coords)
