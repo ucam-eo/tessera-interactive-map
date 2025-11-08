@@ -24,11 +24,14 @@ class Config:
     # Spatial parameters
     min_bbox_size: float = 0.1  # minimum bounding box size in degrees
     max_bbox_size: float = 10.0  # maximum bounding box size in degrees
-    lat_coords: tuple = field(default_factory=lambda: (52.00, 52.20))
-    lon_coords: tuple = field(default_factory=lambda: (-0.10, 0.30))
+    lat_coords: tuple = field(default_factory=lambda: (52.15, 52.25))
+    lon_coords: tuple = field(default_factory=lambda: (0.05, 0.25))
 
     # Temporal
     target_year: int = 2024
+
+    # Storage
+    embeddings_dir: str = "./embeddings"
 
     # Visualisation
     n_samples: int = 100000

@@ -25,8 +25,9 @@ dependencies = [
     "ipywidgets",
     "ipykernel",
     "rasterio",
-    "geotessera>=0.5.0",
+    "geotessera>=0.7.0",
     "pyyaml",
+    "tqdm",
 ]
 
 [project.urls]
@@ -54,3 +55,6 @@ profile = "black"
 python_version = 3.8
 ignore_missing_imports = true
 strict = true
+
+[tool.uv.sources]
+geotessera = { path = "../geotessera" }
