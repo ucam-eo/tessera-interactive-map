@@ -2,6 +2,7 @@ import base64
 import io
 import json
 from functools import partial
+import os
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -204,24 +205,46 @@ class InteractiveMappingTool:
 
     def _create_map(self) -> None:
         """Create the interactive map with basemap and overlay layers."""
+        import os, json
+
         map_layout = Layout(height="600px", width="100%")
+        state_file = "session/map_state.json"
+        os.makedirs("session", exist_ok=True)
+
+        # Try to load previous map state
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r") as f:
+                    state = json.load(f)
+                center = tuple(state.get("center", (52.2053, 0.1218)))
+                zoom = state.get("zoom", 13)
+                print(f"Restored map view from {state_file}: center={center}, zoom={zoom}")
+            except Exception as e:
+                # Defaulting to Cambridge, UK
+                print(f"Warning: failed to load map state ({e})")
+                center, zoom = (52.2053, 0.1218), 13
+        else:
+            center, zoom = (52.2053, 0.1218), 13
+
+        # Create the map 
         self.m = Map(
             layers=(self.current_basemap,),
-            center=(
-                (self.min_lat + self.max_lat) / 2,
-                (self.min_lon + self.max_lon) / 2,
-            ),
-            zoom=12,
+            center=center,
+            zoom=zoom,
             layout=map_layout,
         )
+
         self.image_overlay = ImageOverlay(
             url=self.vis_data_url,
             bounds=self.vis_bounds,
             opacity=self.opacity_slider.value if self.opacity_toggle.value else 0.7,
         )
         self.m.add(self.image_overlay)
-
         print("Image overlay added to map.")
+
+        # --- Observe map movement & zoom changes ---
+        self._state_file = state_file
+        self.m.observe(self._save_map_state, names=["center", "zoom"])
 
     def update_legend(self) -> None:
         """Update the legend widget with current class colors."""
@@ -425,8 +448,8 @@ class InteractiveMappingTool:
             selected_class = self.class_dropdown.value
             kernel_size = self.kernel_size_slider.value
             
-            # Convert lat/lon to pixel row/col
-            center_row, center_col = transform.rowcol(self.mosaic_transform, lon, lat)
+            # Convert lat/lon to pixel row/col (and round)
+            center_row, center_col = transform.rowcol(self.mosaic_transform, lon, lat, op=round)
             
             # Check if click is within bounds
             mosaic_height, mosaic_width, _ = self.embedding_mosaic.shape
@@ -446,8 +469,8 @@ class InteractiveMappingTool:
             points_to_add = []
             for r in range(row_start, row_end):
                 for c in range(col_start, col_end):
-                    # Convert each pixel back to lat/lon
-                    px_lon, px_lat = transform.xy(self.mosaic_transform, r, c)
+                    # Convert each pixel back to lat/lon with explicit center offset
+                    px_lon, px_lat = transform.xy(self.mosaic_transform, r, c, offset='center')
                     points_to_add.append(([px_lat, px_lon], selected_class))
             
             # Add the points to the main list
@@ -982,6 +1005,19 @@ class InteractiveMappingTool:
         with self.output_log:
             print("Updated embedding visualization overlay")
             print(f"Bounds: ({south:.4f}, {west:.4f}) to ({north:.4f}, {east:.4f})")
+    def _save_map_state(self, change=None):
+        """Save current map center and zoom to session file."""
+        state = {
+            "center": self.m.center,
+            "zoom": self.m.zoom,
+        }
+        try:
+            with open(self._state_file, "w") as f:
+                json.dump(state, f)
+            # Debug print (optional):
+            # print(f"Saved map view: {state}")
+        except Exception as e:
+            print(f"Warning: could not save map state ({e})")
 
 
 class BoundingBoxSelector:
@@ -997,13 +1033,58 @@ class BoundingBoxSelector:
         self.bbox_too_small = False
         self.bbox_too_large = False
 
-        # create world map
+        state_file = "session/map_state.json"
+
+        # Saving the session 
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r") as f:
+                    state = json.load(f)
+                center = tuple(state["center"])
+                zoom = state["zoom"]
+            except (KeyError, ValueError):
+                # fallback to Cambridge in case file is corrupted
+                center, zoom = (52.2053, 0.1218), 13
+        else:
+            # default to Cambridge
+            center, zoom = (52.2053, 0.1218), 13
+
+            # make sure session folder exists and create the file
+            os.makedirs("session", exist_ok=True)
+            state = {"center": center, "zoom": zoom}
+            with open(state_file, "w") as f:
+                json.dump(state, f)
+
+        # create map
         self.map = Map(
-            center=(20, 0),  # center on world view
-            zoom=2,
+            center=center,
+            zoom=zoom,
             layout={"width": "100%", "height": "500px"},
+            scroll_wheel_zoom=True
         )
 
+        # save state on user interaction
+        self.map.observe(self._save_map_state, names=["center", "zoom"])
+        self._state_file = state_file
+        
+        self.init_draw_controls()
+
+        # create output widgets
+        self.info_widget = HTML(
+            value="<b>Instructions:</b> Draw a rectangle on the map to select your bounding box."
+        )
+        self.coords_output = Output()
+
+        # create layout
+        self.widget = VBox(
+            [
+                self.info_widget,
+                self.map,
+                self.coords_output,
+            ]
+        )
+
+    def init_draw_controls(self):
         # create draw control for rectangles alone with improved settings
         self.draw_control = DrawControl(
             rectangle={
@@ -1028,21 +1109,6 @@ class BoundingBoxSelector:
 
         # set up event handlers
         self.draw_control.on_draw(self._on_draw)
-
-        # create output widgets
-        self.info_widget = HTML(
-            value="<b>Instructions:</b> Draw a rectangle on the map to select your bounding box."
-        )
-        self.coords_output = Output()
-
-        # create layout
-        self.widget = VBox(
-            [
-                self.info_widget,
-                self.map,
-                self.coords_output,
-            ]
-        )
 
     def _on_draw(
         self, target: DrawControl, action: str, geo_json: dict, **kwargs
@@ -1071,6 +1137,11 @@ class BoundingBoxSelector:
                 if self.visual_rectangle is not None:
                     self.map.remove_layer(self.visual_rectangle)
 
+                # removes the red rectangles from render by deleting the draw controls and reinstantiating them
+                # not the best way to do it, but the red recs are tied to the draw controls 
+                self.map.remove_layer(target)
+                self.init_draw_controls()
+
                 # extract coordinates from the drawn rectangle
                 coords = geo_json["geometry"]["coordinates"][0]
                 lons = [coord[0] for coord in coords]
@@ -1085,7 +1156,7 @@ class BoundingBoxSelector:
                     bounds=[(min_lat, min_lon), (max_lat, max_lon)],
                     color="#2f7d31",  # green color for selected rectangle
                     weight=3,
-                    fill_opacity=0.3,
+                    fill_opacity=0.4,
                     fill_color="#2f7d31",
                 )
 
@@ -1185,3 +1256,12 @@ class BoundingBoxSelector:
             dict (dict | None): Dictionary with min_lat, max_lat, min_lon, max_lon keys or None
         """
         return self.bbox_coords
+    
+    
+    def _save_map_state(self, change=None):
+        state = {
+            "center": self.map.center,
+            "zoom": self.map.zoom,
+        }
+        with open(self._state_file, "w") as f:
+            json.dump(state, f)
