@@ -3,6 +3,7 @@
 
 *.egg-info
 __pycache__
+embeddings/
 
 .ipynb_checkpoints
 

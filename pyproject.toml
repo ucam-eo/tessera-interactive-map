@@ -25,8 +25,9 @@ dependencies = [
     "ipywidgets",
     "ipykernel",
     "rasterio",
-    "geotessera>=0.5.0",
+    "geotessera>=0.7.0",
     "pyyaml",
+    "tqdm",
 ]
 
 [project.urls]
