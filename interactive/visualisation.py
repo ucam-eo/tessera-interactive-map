@@ -7,6 +7,8 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
+from rasterio.enums import Resampling
+from rasterio.warp import reproject
 from ipyleaflet import (
     CircleMarker,
     DrawControl,
@@ -1342,6 +1344,8 @@ class InteractiveHeightMappingTool:
         mosaic_transform: Affine,
         height_gt: np.ndarray,
         height_gt_transform: Affine,
+        height_gt_crs: str | None = None,
+        mosaic_crs: str = "EPSG:4326",
         height_gt_nodata: float = -9999.0,
     ):
         self.min_lat = min_lat
@@ -1354,17 +1358,33 @@ class InteractiveHeightMappingTool:
 
         self.height_gt = height_gt
         self.height_gt_transform = height_gt_transform
+        self.height_gt_crs = height_gt_crs
+        self.mosaic_crs = mosaic_crs
         self.height_gt_nodata = height_gt_nodata
 
-        if self.height_gt.shape[:2] != self.embedding_mosaic.shape[:2]:
-            raise ValueError(
-                f"GT shape {self.height_gt.shape} does not match embedding shape {self.embedding_mosaic.shape}"
+        # If GT is not already on the embedding grid, warp it onto the embedding grid.
+        # This allows GT and embedding to differ in shape/CRS, as long as georeferencing is provided.
+        if (
+            self.height_gt.shape[:2] != self.embedding_mosaic.shape[:2]
+            or self.height_gt_transform != self.mosaic_transform
+        ):
+            src_crs = self.height_gt_crs or self.mosaic_crs
+            if src_crs is None:
+                raise ValueError(
+                    "GT grid differs from embedding grid but `height_gt_crs` was not provided. "
+                    "Please pass `height_gt_crs=ds.crs.to_string()` when reading the GT GeoTIFF."
+                )
+            self.height_gt = self._warp_gt_to_embedding_grid(
+                self.height_gt,
+                src_transform=self.height_gt_transform,
+                src_crs=src_crs,
+                src_nodata=self.height_gt_nodata,
+                dst_transform=self.mosaic_transform,
+                dst_crs=self.mosaic_crs,
+                dst_shape=self.embedding_mosaic.shape[:2],
+                dst_nodata=self.height_gt_nodata,
             )
-        if self.height_gt_transform != self.mosaic_transform:
-            raise ValueError(
-                "GT transform does not match embedding transform. "
-                "Please use the stitched GT aligned to the embedding grid."
-            )
+            self.height_gt_transform = self.mosaic_transform
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.net: nn.Module | None = None
@@ -1373,10 +1393,11 @@ class InteractiveHeightMappingTool:
 
         # ROI state
         self.active_roi_target = "train"
-        self.train_roi_geojson = None
-        self.test_roi_geojson = None
-        self.train_roi_layer = None
-        self.test_roi_layer = None
+        # Support multiple disjoint ROIs (append-on-draw)
+        self.train_rois_geojson: list[dict] = []
+        self.test_rois_geojson: list[dict] = []
+        self.train_roi_layers: list[Rectangle] = []
+        self.test_roi_layers: list[Rectangle] = []
 
         # patch state
         self.train_patch_coords: list[tuple[int, int]] = []
@@ -1436,6 +1457,8 @@ class InteractiveHeightMappingTool:
         # ROI controls
         self.draw_train_button = ToggleButton(value=True, description="Draw Train ROI", button_style="success")
         self.draw_test_button = ToggleButton(value=False, description="Draw Test ROI", button_style="warning")
+        self.undo_train_roi_button = Button(description="Undo Train ROI")
+        self.undo_test_roi_button = Button(description="Undo Test ROI")
         self.clear_rois_button = Button(description="Clear ROIs")
 
         # Put embedding toggle+opacity on the same row as Clear ROIs (per request)
@@ -1472,6 +1495,7 @@ class InteractiveHeightMappingTool:
         # Export + patch count display (to the right of Export err.tif)
         self.export_pred_button = Button(description="Export pred.tif")
         self.export_err_button = Button(description="Export err.tif")
+        self.export_gt_button = Button(description="Export gt_aligned.tif")
         self.patch_count_label = HTML(value="<b>Patches:</b> -")
 
     def _create_map(self) -> None:
@@ -1511,6 +1535,8 @@ class InteractiveHeightMappingTool:
                 self.basemap_selector,
                 self.draw_train_button,
                 self.draw_test_button,
+                self.undo_train_roi_button,
+                self.undo_test_roi_button,
                 self.clear_rois_button,
                 self.show_embedding_toggle,
                 self.embedding_opacity,
@@ -1529,7 +1555,7 @@ class InteractiveHeightMappingTool:
         )
 
         infer_row = HBox(
-            [self.predict_button, self.clear_pred_button, self.export_pred_button, self.export_err_button, self.patch_count_label],
+            [self.predict_button, self.clear_pred_button, self.export_pred_button, self.export_err_button, self.export_gt_button, self.patch_count_label],
             layout=Layout(width="100%", flex_flow="row wrap"),
         )
 
@@ -1585,6 +1611,33 @@ class InteractiveHeightMappingTool:
         b64_data = base64.b64encode(buffer.read()).decode("utf-8")
         return vis_bounds, f"data:image/png;base64,{b64_data}"
 
+    def _warp_gt_to_embedding_grid(
+        self,
+        src: np.ndarray,
+        *,
+        src_transform: Affine,
+        src_crs: str,
+        src_nodata: float,
+        dst_transform: Affine,
+        dst_crs: str,
+        dst_shape: tuple[int, int],
+        dst_nodata: float,
+    ) -> np.ndarray:
+        """Warp a single-band GT raster to the embedding grid."""
+        dst = np.full(dst_shape, dst_nodata, dtype=np.float32)
+        reproject(
+            source=src.astype(np.float32, copy=False),
+            destination=dst,
+            src_transform=src_transform,
+            src_crs=src_crs,
+            src_nodata=src_nodata,
+            dst_transform=dst_transform,
+            dst_crs=dst_crs,
+            dst_nodata=dst_nodata,
+            resampling=Resampling.bilinear,
+        )
+        return dst
+
     # -----------------
     # ROI / patches
     # -----------------
@@ -1611,6 +1664,14 @@ class InteractiveHeightMappingTool:
         h, w, _ = self.embedding_mosaic.shape
         geom = roi_geojson["geometry"]
         return geometry_mask([geom], out_shape=(h, w), transform=self.mosaic_transform, invert=True, all_touched=False)
+
+    def _rois_mask(self, rois_geojson: list[dict]) -> np.ndarray:
+        """Union mask for multiple ROIs."""
+        h, w, _ = self.embedding_mosaic.shape
+        if not rois_geojson:
+            return np.zeros((h, w), dtype=bool)
+        geoms = [r["geometry"] for r in rois_geojson]
+        return geometry_mask(geoms, out_shape=(h, w), transform=self.mosaic_transform, invert=True, all_touched=False)
 
     def _valid_gt_mask(self) -> np.ndarray:
         y = self.height_gt
@@ -1664,12 +1725,12 @@ class InteractiveHeightMappingTool:
             f"<b>Patches:</b> train={len(self.train_patch_coords):,} | test={len(self.test_patch_coords):,} | infer={infer_n:,}"
         )
 
-    def _gen_patch_coords_for_roi(self, roi_geojson: dict) -> list[tuple[int, int]]:
+    def _gen_patch_coords_for_roi(self, roi_geojson: dict, *, require_valid_gt: bool = False) -> list[tuple[int, int]]:
         ps = int(self.patch_size.value)
         stride = self._stride_px()
         h, w, _ = self.embedding_mosaic.shape
         roi_mask = self._roi_mask(roi_geojson)
-        valid_gt = self._valid_gt_mask()
+        valid_gt = self._valid_gt_mask() if require_valid_gt else None
 
         min_lat, max_lat, min_lon, max_lon = self._roi_bounds_latlon(roi_geojson)
         r0, r1, c0, c1 = self._latlon_bbox_to_pixel_bounds(min_lat, max_lat, min_lon, max_lon)
@@ -1711,14 +1772,31 @@ class InteractiveHeightMappingTool:
                     continue
                 if not roi_mask[cr, cc2]:
                     continue
-                if not np.any(valid_gt[rr : rr + ps, cc : cc + ps]):
-                    continue
+                if require_valid_gt:
+                    # For training/metrics only: require at least some valid GT pixels
+                    if not np.any(valid_gt[rr : rr + ps, cc : cc + ps]):
+                        continue
                 coords.append((rr, cc))
         return coords
 
+    def _gen_patch_coords_for_rois(self, rois_geojson: list[dict], *, require_valid_gt: bool = False) -> list[tuple[int, int]]:
+        """Union patch coords across multiple ROIs (de-duplicated)."""
+        if not rois_geojson:
+            return []
+        seen: set[tuple[int, int]] = set()
+        out: list[tuple[int, int]] = []
+        for roi in rois_geojson:
+            for rc in self._gen_patch_coords_for_roi(roi, require_valid_gt=require_valid_gt):
+                if rc in seen:
+                    continue
+                seen.add(rc)
+                out.append(rc)
+        return out
+
     def _recompute_patches(self) -> None:
-        self.train_patch_coords = self._gen_patch_coords_for_roi(self.train_roi_geojson) if self.train_roi_geojson else []
-        self.test_patch_coords = self._gen_patch_coords_for_roi(self.test_roi_geojson) if self.test_roi_geojson else []
+        # For UI + inference: generate patch grid regardless of GT validity (so Test ROI always shows patches).
+        self.train_patch_coords = self._gen_patch_coords_for_rois(self.train_rois_geojson, require_valid_gt=False)
+        self.test_patch_coords = self._gen_patch_coords_for_rois(self.test_rois_geojson, require_valid_gt=False)
         self._refresh_patch_overlays()
         self._update_patch_count_label()
 
@@ -1730,6 +1808,16 @@ class InteractiveHeightMappingTool:
                 print(f"NOTE: patch bbox 可视化最多绘制 {self._MAX_PATCH_RECTS_TO_DRAW} 个，避免卡顿。")
             print(f"Train patches: {len(self.train_patch_coords):,}")
             print(f"Test patches : {len(self.test_patch_coords):,}")
+
+    def _filter_coords_with_valid_gt(self, coords: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Keep only patches that contain at least one valid GT pixel."""
+        ps = int(self.patch_size.value)
+        valid_gt = self._valid_gt_mask()
+        out: list[tuple[int, int]] = []
+        for (r0, c0) in coords:
+            if np.any(valid_gt[r0 : r0 + ps, c0 : c0 + ps]):
+                out.append((r0, c0))
+        return out
 
     def _set_roi_from_bounds(self, target: str, min_lat: float, max_lat: float, min_lon: float, max_lon: float) -> None:
         geo = {
@@ -1750,35 +1838,27 @@ class InteractiveHeightMappingTool:
         }
 
         if target == "train":
-            self.train_roi_geojson = geo
-            if self.train_roi_layer is not None:
-                try:
-                    self.m.remove_layer(self.train_roi_layer)
-                except Exception:
-                    pass
-            self.train_roi_layer = Rectangle(
+            self.train_rois_geojson.append(geo)
+            layer = Rectangle(
                 bounds=[(min_lat, min_lon), (max_lat, max_lon)],
                 color="#00aa00",
                 weight=3,
                 fill_opacity=0.1,
                 fill_color="#00aa00",
             )
-            self.m.add_layer(self.train_roi_layer)
+            self.m.add_layer(layer)
+            self.train_roi_layers.append(layer)
         else:
-            self.test_roi_geojson = geo
-            if self.test_roi_layer is not None:
-                try:
-                    self.m.remove_layer(self.test_roi_layer)
-                except Exception:
-                    pass
-            self.test_roi_layer = Rectangle(
+            self.test_rois_geojson.append(geo)
+            layer = Rectangle(
                 bounds=[(min_lat, min_lon), (max_lat, max_lon)],
                 color="#ff8800",
                 weight=3,
                 fill_opacity=0.1,
                 fill_color="#ff8800",
             )
-            self.m.add_layer(self.test_roi_layer)
+            self.m.add_layer(layer)
+            self.test_roi_layers.append(layer)
 
     def _init_default_rois(self) -> None:
         # Train ROI: left upper (47.167811,7.273987), right lower (47.163849,7.286448)
@@ -1808,50 +1888,45 @@ class InteractiveHeightMappingTool:
         min_lon, max_lon = min(lons), max(lons)
 
         if self.active_roi_target == "train":
-            self.train_roi_geojson = geo_json
-            if self.train_roi_layer is not None:
-                try:
-                    self.m.remove_layer(self.train_roi_layer)
-                except Exception:
-                    pass
-            self.train_roi_layer = Rectangle(
+            self.train_rois_geojson.append(geo_json)
+            layer = Rectangle(
                 bounds=[(min_lat, min_lon), (max_lat, max_lon)],
                 color="#00aa00",
                 weight=3,
                 fill_opacity=0.1,
                 fill_color="#00aa00",
             )
-            self.m.add_layer(self.train_roi_layer)
+            self.m.add_layer(layer)
+            self.train_roi_layers.append(layer)
         else:
-            self.test_roi_geojson = geo_json
-            if self.test_roi_layer is not None:
-                try:
-                    self.m.remove_layer(self.test_roi_layer)
-                except Exception:
-                    pass
-            self.test_roi_layer = Rectangle(
+            self.test_rois_geojson.append(geo_json)
+            layer = Rectangle(
                 bounds=[(min_lat, min_lon), (max_lat, max_lon)],
                 color="#ff8800",
                 weight=3,
                 fill_opacity=0.1,
                 fill_color="#ff8800",
             )
-            self.m.add_layer(self.test_roi_layer)
+            self.m.add_layer(layer)
+            self.test_roi_layers.append(layer)
 
         self._recompute_patches()
 
     def _clear_rois(self, *_):
-        self.train_roi_geojson = None
-        self.test_roi_geojson = None
-        for layer in [self.train_roi_layer, self.test_roi_layer]:
-            if layer is None:
-                continue
+        self.train_rois_geojson = []
+        self.test_rois_geojson = []
+        for layer in list(self.train_roi_layers):
             try:
                 self.m.remove_layer(layer)
             except Exception:
                 pass
-        self.train_roi_layer = None
-        self.test_roi_layer = None
+        for layer in list(self.test_roi_layers):
+            try:
+                self.m.remove_layer(layer)
+            except Exception:
+                pass
+        self.train_roi_layers = []
+        self.test_roi_layers = []
         self.train_patch_coords = []
         self.test_patch_coords = []
         self.infer_patch_coords = []
@@ -1869,6 +1944,30 @@ class InteractiveHeightMappingTool:
         with self.output_log:
             self.output_log.clear_output(wait=True)
             print("Cleared Train/Test ROIs and patch grids.")
+
+    def _undo_last_train_roi(self, *_):
+        if not self.train_rois_geojson:
+            return
+        self.train_rois_geojson.pop()
+        if self.train_roi_layers:
+            layer = self.train_roi_layers.pop()
+            try:
+                self.m.remove_layer(layer)
+            except Exception:
+                pass
+        self._recompute_patches()
+
+    def _undo_last_test_roi(self, *_):
+        if not self.test_rois_geojson:
+            return
+        self.test_rois_geojson.pop()
+        if self.test_roi_layers:
+            layer = self.test_roi_layers.pop()
+            try:
+                self.m.remove_layer(layer)
+            except Exception:
+                pass
+        self._recompute_patches()
 
     # -----------------
     # Train / Predict
@@ -1923,27 +2022,32 @@ class InteractiveHeightMappingTool:
     def _train_unet(self, *_):
         with self.output_log:
             self.output_log.clear_output(wait=True)
-            if not self.train_patch_coords:
-                print("ERROR: No train patches. Check Train ROI.")
+            # For training we require GT-valid patches
+            train_coords = self._filter_coords_with_valid_gt(self.train_patch_coords) if self.train_patch_coords else []
+            test_coords = self._filter_coords_with_valid_gt(self.test_patch_coords) if self.test_patch_coords else []
+
+            if not train_coords:
+                print("ERROR: No train patches with valid GT pixels. Check Train ROI / GT coverage.")
                 return
-            if not self.test_patch_coords:
-                print("WARNING: No test patches. Will train without test loss.")
+            if not test_coords:
+                print("WARNING: No test patches with valid GT pixels. Will train without test loss.")
 
             ps = int(self.patch_size.value)
             print(f"Device: {self.device}")
-            print(f"Train patches: {len(self.train_patch_coords):,} | Test patches: {len(self.test_patch_coords):,}")
+            print(f"Train patches (all): {len(self.train_patch_coords):,} | Test patches (all): {len(self.test_patch_coords):,}")
+            print(f"Train patches (gt-valid): {len(train_coords):,} | Test patches (gt-valid): {len(test_coords):,}")
             print(f"Patch size: {ps} | overlap {int(self.overlap_pct.value)}% | stride {self._stride_px()}")
 
             if self.normalize_embeddings.value:
                 print("Computing embedding normalization (mean/std) from train patches...")
-                self._compute_normalization(self.train_patch_coords, ps)
+                self._compute_normalization(train_coords, ps)
                 print("Normalization ready.")
             else:
                 self.mean = None
                 self.std = None
 
             train_ds = self._PatchDataset(
-                self.embedding_mosaic, self.height_gt, self.train_patch_coords, ps, self.height_gt_nodata, self.mean, self.std
+                self.embedding_mosaic, self.height_gt, train_coords, ps, self.height_gt_nodata, self.mean, self.std
             )
             train_loader = DataLoader(
                 train_ds,
@@ -1952,9 +2056,9 @@ class InteractiveHeightMappingTool:
                 num_workers=int(self.num_workers.value),
                 pin_memory=(self.device.type == "cuda"),
             )
-            if self.test_patch_coords:
+            if test_coords:
                 test_ds = self._PatchDataset(
-                    self.embedding_mosaic, self.height_gt, self.test_patch_coords, ps, self.height_gt_nodata, self.mean, self.std
+                    self.embedding_mosaic, self.height_gt, test_coords, ps, self.height_gt_nodata, self.mean, self.std
                 )
                 test_loader = DataLoader(
                     test_ds,
@@ -2039,13 +2143,14 @@ class InteractiveHeightMappingTool:
                 return
 
             infer = self.inference_region.value
-            roi = self.train_roi_geojson if infer == "Train ROI" else self.test_roi_geojson
-            if roi is None:
+            rois = self.train_rois_geojson if infer == "Train ROI" else self.test_rois_geojson
+            if not rois:
                 print(f"ERROR: {infer} not set.")
                 return
 
             ps = int(self.patch_size.value)
-            coords = self._gen_patch_coords_for_roi(roi)
+            # Inference should NOT require GT coverage (can predict anywhere inside ROI)
+            coords = self._gen_patch_coords_for_rois(rois, require_valid_gt=False)
             self.infer_patch_coords = coords
             self._update_patch_count_label()
             if not coords:
@@ -2057,7 +2162,7 @@ class InteractiveHeightMappingTool:
             h, w, _ = self.embedding_mosaic.shape
             pred_sum = np.zeros((h, w), dtype=np.float32)
             pred_w = np.zeros((h, w), dtype=np.float32)
-            roi_mask = self._roi_mask(roi)
+            roi_mask = self._rois_mask(rois)
 
             self.net.eval()
             bs = int(self.batch_size.value)
@@ -2089,6 +2194,24 @@ class InteractiveHeightMappingTool:
             both = ok & gt_valid
             err[both] = pred_full[both] - self.height_gt[both]
             self.last_err = err
+
+            # Print quantitative sanity-check metrics (only where GT is valid and predicted)
+            if np.any(both):
+                e = err[both]
+                mae = float(np.mean(np.abs(e)))
+                rmse = float(np.sqrt(np.mean(e ** 2)))
+                bias = float(np.mean(e))
+                gt_vals = self.height_gt[both]
+                pred_vals = pred_full[both]
+                print(f"Eval (ROI valid pixels): n={both.sum():,} | MAE={mae:.3f} | RMSE={rmse:.3f} | bias={bias:.3f}")
+                print(
+                    f"GT stats:  min={float(gt_vals.min()):.3f} max={float(gt_vals.max()):.3f} mean={float(gt_vals.mean()):.3f}"
+                )
+                print(
+                    f"Pred stats:min={float(pred_vals.min()):.3f} max={float(pred_vals.max()):.3f} mean={float(pred_vals.mean()):.3f}"
+                )
+            else:
+                print("Eval: no overlapping valid GT pixels in this ROI (GT is nodata here).")
 
             print("Stitching done. Updating overlays...")
             self._update_pred_err_overlays()
@@ -2174,6 +2297,10 @@ class InteractiveHeightMappingTool:
             self.m.add(self.err_layer)
 
     def _export_singleband(self, out_fp: str, arr: np.ndarray):
+        # sanitize non-finite values for GIS friendliness
+        arr = arr.astype(np.float32, copy=False)
+        arr = np.where(np.isfinite(arr), arr, self.height_gt_nodata).astype(np.float32, copy=False)
+
         with rasterio.open(
             out_fp,
             "w",
@@ -2191,6 +2318,25 @@ class InteractiveHeightMappingTool:
             BIGTIFF="IF_SAFER",
         ) as ds:
             ds.write(arr.astype(np.float32), 1)
+            # Write statistics tags so QGIS doesn't show +/-Inf before computing stats
+            valid = np.isfinite(arr) & (arr != self.height_gt_nodata)
+            if np.any(valid):
+                v = arr[valid]
+                ds.update_tags(
+                    1,
+                    STATISTICS_MINIMUM=str(float(v.min())),
+                    STATISTICS_MAXIMUM=str(float(v.max())),
+                    STATISTICS_MEAN=str(float(v.mean())),
+                    STATISTICS_STDDEV=str(float(v.std())),
+                )
+            else:
+                ds.update_tags(
+                    1,
+                    STATISTICS_MINIMUM="0",
+                    STATISTICS_MAXIMUM="0",
+                    STATISTICS_MEAN="0",
+                    STATISTICS_STDDEV="0",
+                )
         with self.output_log:
             self.output_log.clear_output(wait=True)
             print(f"Exported {out_fp}")
@@ -2210,6 +2356,10 @@ class InteractiveHeightMappingTool:
                 print("Nothing to export: run Predict & Stitch first.")
             return
         self._export_singleband("err_pred_minus_gt_on_embedding_grid.tif", self.last_err)
+
+    def _export_gt_aligned(self, *_):
+        # Export the in-memory GT (already aligned/warped to embedding grid) for easy comparison in GIS.
+        self._export_singleband("gt_aligned_on_embedding_grid.tif", self.height_gt)
 
     def _clear_pred_err(self, *_):
         self.last_prediction = None
@@ -2231,6 +2381,8 @@ class InteractiveHeightMappingTool:
 
         self.draw_train_button.observe(lambda ch: ch["new"] and self._set_active_roi_target("train"), names="value")
         self.draw_test_button.observe(lambda ch: ch["new"] and self._set_active_roi_target("test"), names="value")
+        self.undo_train_roi_button.on_click(self._undo_last_train_roi)
+        self.undo_test_roi_button.on_click(self._undo_last_test_roi)
         self.clear_rois_button.on_click(self._clear_rois)
 
         self.basemap_selector.observe(self.on_basemap_change, names="value")
@@ -2261,6 +2413,7 @@ class InteractiveHeightMappingTool:
         self.clear_pred_button.on_click(self._clear_pred_err)
         self.export_pred_button.on_click(self._export_pred)
         self.export_err_button.on_click(self._export_err)
+        self.export_gt_button.on_click(self._export_gt_aligned)
 
     def on_basemap_change(self, change: dict) -> None:
         new_basemap_name = change["new"]

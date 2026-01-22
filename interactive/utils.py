@@ -3,6 +3,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import rasterio
+from pathlib import Path
 
 # geospatial
 import sys
@@ -134,6 +135,96 @@ class TesseraUtils:
         self.tessera = GeoTessera()
         self.config = config_instance or config
 
+    def _tile_id(self, lon: float, lat: float) -> str:
+        """
+        GeoTessera tile folder naming: grid_<lon>_<lat> (2dp), where lon/lat are tile CENTERS.
+        Example: grid_7.25_47.15
+        """
+        return f"grid_{lon:.2f}_{lat:.2f}"
+
+    def _geotessera_cache_root(self) -> Path:
+        # Default GeoTessera cache layout on linux:
+        #   ~/.cache/geotessera/v1/<year>/grid_<lon>_<lat>/grid_<lon>_<lat>.npy
+        if getattr(self.config, "geotessera_cache_dir", None):
+            return Path(self.config.geotessera_cache_dir).expanduser()
+        return Path.home() / ".cache" / "geotessera" / "v1"
+
+    def _local_embedding_path(self, lon: float, lat: float, target_year: int) -> Path:
+        tile_id = self._tile_id(lon, lat)
+        return self._geotessera_cache_root() / str(target_year) / tile_id / f"{tile_id}.npy"
+
+    def _local_scales_path(self, lon: float, lat: float, target_year: int) -> Path:
+        tile_id = self._tile_id(lon, lat)
+        return (
+            self._geotessera_cache_root()
+            / str(target_year)
+            / tile_id
+            / f"{tile_id}_scales.npy"
+        )
+
+    def _local_tiff_path(self, lon: float, lat: float, target_year: int) -> Path:
+        """
+        GeoTessera appears to store a per-tile GeoTIFF (georeferencing) under the cache root:
+          ~/.cache/geotessera/v1/grid_<lon>_<lat>.tiff
+        Some installs might also colocate it with the year folder; we check both.
+        """
+        tile_id = self._tile_id(lon, lat)
+        root = self._geotessera_cache_root()
+        candidates = [
+            root / f"{tile_id}.tiff",
+            root / str(target_year) / tile_id / f"{tile_id}.tiff",
+        ]
+        for p in candidates:
+            if p.exists():
+                return p
+        # default to the most common location
+        return candidates[0]
+
+    def _load_local_embedding(self, lon: float, lat: float, target_year: int):
+        """
+        Load embedding tile from local cache and construct georeferencing.
+
+        Preferred: use the cached GeoTIFF's CRS/transform/bounds (exact alignment).
+        Fallback: assume EPSG:4326 and a fixed tile_size_deg bounds.
+        """
+        local_path = self._local_embedding_path(lon, lat, target_year)
+        scales_path = self._local_scales_path(lon, lat, target_year)
+        tiff_path = self._local_tiff_path(lon, lat, target_year)
+
+        embedding = np.load(local_path, allow_pickle=False)
+        dequantize = bool(getattr(self.config, "dequantize_embeddings", True))
+
+        if dequantize and scales_path.exists():
+            scales = np.load(scales_path, allow_pickle=False)  # (H, W), float32
+            embedding = embedding.astype(np.float32) * scales[..., np.newaxis]
+
+        src_height, src_width = embedding.shape[:2]
+
+        if tiff_path.exists():
+            with rasterio.open(tiff_path) as ds:
+                src_crs = ds.crs.to_string() if ds.crs else "EPSG:4326"
+                # Use exact transform from GeoTIFF. It matches the cached npy dimensions
+                # in the standard cache layout, but even if it doesn't, we still use
+                # GeoTIFF bounds to build a transform matching the npy resolution.
+                west, south, east, north = ds.bounds
+                if ds.width == src_width and ds.height == src_height:
+                    src_transform = ds.transform
+                else:
+                    src_transform = from_bounds(
+                        west, south, east, north, src_width, src_height
+                    )
+                src_bounds = (west, south, east, north)
+        else:
+            # fallback (older/manual caches without GeoTIFF)
+            tile_size = float(getattr(self.config, "tile_size_deg", 0.1))
+            half = tile_size / 2.0
+            west, south, east, north = (lon - half, lat - half, lon + half, lat + half)
+            src_crs = "EPSG:4326"
+            src_transform = from_bounds(west, south, east, north, src_width, src_height)
+            src_bounds = (west, south, east, north)
+
+        return embedding, src_crs, src_transform, src_height, src_width, src_bounds
+
     def check_tessera_tiles(
         self, lat_coords: tuple, lon_coords: tuple, target_year: Optional[int] = None
     ) -> List[Tuple[float, float]]:
@@ -175,11 +266,35 @@ class TesseraUtils:
 
     def fetch_embedding_metadata(self, lat: float, lon: float, target_year: int):
         """Fetch embedding and associated metadata for a single tile."""
-        embedding, src_crs, src_transform = self.tessera.fetch_embedding(lon, lat, year=target_year)
-        
-        src_height, src_width = embedding.shape[:2]
-        from rasterio.transform import array_bounds
-        src_bounds = array_bounds(src_height, src_width, src_transform)
+        local_path = self._local_embedding_path(lon, lat, target_year)
+        prefer_local_cache = bool(getattr(self.config, "prefer_local_cache", True))
+        offline = bool(getattr(self.config, "offline", False))
+
+        # If cached tile exists and local cache is preferred, never attempt a download.
+        if prefer_local_cache and local_path.exists():
+            embedding, src_crs, src_transform, src_height, src_width, src_bounds = (
+                self._load_local_embedding(lon, lat, target_year)
+            )
+        else:
+            if offline and not local_path.exists():
+                raise FileNotFoundError(
+                    f"Offline mode enabled and tile is missing from cache: {local_path}"
+                )
+            try:
+                embedding, src_crs, src_transform = self.tessera.fetch_embedding(
+                    lon, lat, year=target_year
+                )
+                src_height, src_width = embedding.shape[:2]
+                from rasterio.transform import array_bounds
+                src_bounds = array_bounds(src_height, src_width, src_transform)
+            except Exception:
+                # Network can fail even if the file is present; fall back to local cache if possible.
+                if local_path.exists():
+                    embedding, src_crs, src_transform, src_height, src_width, src_bounds = (
+                        self._load_local_embedding(lon, lat, target_year)
+                    )
+                else:
+                    raise
 
         return (
             embedding,
@@ -192,7 +307,7 @@ class TesseraUtils:
         )
 
     def reproject_tessera_tiles(
-        self, tiles_to_merge: List[Tuple[float, float]]
+        self, tiles_to_merge: List[Tuple[float, float]], target_year: Optional[int] = None
     ) -> List[MemoryFile]:
         """
         Reproject tessera tiles and return list of MemoryFile objects.
@@ -204,6 +319,7 @@ class TesseraUtils:
             List of MemoryFile objects containing reprojected tiles
         """
         reprojected_tiles = []
+        target_year = target_year if target_year is not None else self.config.target_year
 
         for _, (lat, lon) in tqdm(
             enumerate(tiles_to_merge),
@@ -219,7 +335,7 @@ class TesseraUtils:
                     src_height,
                     src_width,
                     src_bounds,
-                ) = self.fetch_embedding_metadata(lat, lon, self.config.target_year)
+                ) = self.fetch_embedding_metadata(lat, lon, target_year)
 
                 reprojected_embedding, dst_transform, dst_width, dst_height = (
                     self.reproject_embedding(
@@ -401,23 +517,20 @@ class TesseraUtils:
         bbox = (lon_min, lat_min, lon_max, lat_max)  # (min_lon, min_lat, max_lon, max_lat)
 
         print(f"\nFetching embeddings for ROI: {bbox} for year {target_year}")
-        
-        def progress_callback(current, total, status=None):
-            if status:
-                print(f"\r{status} ({current}/{total})", end="", flush=True)
-            else:
-                print(f"\rProgress: {current}/{total}", end="", flush=True)
-            if current == total:
-                print()  # New line when complete
-        
-        tiles_data = self.tessera.fetch_embeddings(bbox, target_year, progress_callback)
-        
-        if not tiles_data:
-            raise ValueError(f"No embedding tiles found for the specified ROI in year {target_year}")
-        
-        print(f"Fetched {len(tiles_data)} tiles. Creating mosaic...")
-        tiles_to_merge = [(lat, lon) for lon, lat, _, _, _ in tiles_data]
-        reprojected_tiles = self.reproject_tessera_tiles(tiles_to_merge)
+
+        # IMPORTANT:
+        # Avoid GeoTessera.fetch_embeddings(...) here because it will attempt downloads
+        # (and can fail hard when dl.geotessera.org is unreachable), even if tiles are
+        # already present on disk. Instead, list tiles via registry and fetch them
+        # one-by-one with local-cache-first behavior.
+        tiles_to_merge = self.check_tessera_tiles(
+            lat_coords=lat_coords, lon_coords=lon_coords, target_year=target_year
+        )
+
+        print(f"Processing {len(tiles_to_merge)} tiles. Creating mosaic...")
+        reprojected_tiles = self.reproject_tessera_tiles(
+            tiles_to_merge, target_year=target_year
+        )
         embedding_mosaic, mosaic_transform = self.merge_tiles(reprojected_tiles)
         
         return embedding_mosaic, mosaic_transform

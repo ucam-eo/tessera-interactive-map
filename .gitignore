@@ -1,5 +1,9 @@
 /.venv
 /*venv
+data/
+embedding/
 
 *.egg-info
 __pycache__
+*.tif
+*.json

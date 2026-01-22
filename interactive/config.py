@@ -30,6 +30,24 @@ class Config:
     # Temporal
     target_year: int = 2024
 
+    # GeoTessera cache / offline behavior
+    # If geotessera servers are unreachable, you can manually place tiles under:
+    #   ~/.cache/geotessera/v1/<year>/grid_<lon>_<lat>/grid_<lon>_<lat>.npy
+    # and set prefer_local_cache=True (default) or offline=True.
+    geotessera_cache_dir: Optional[str] = None  # default: ~/.cache/geotessera/v1
+    prefer_local_cache: bool = True  # if cached tile exists, load it without downloading
+    offline: bool = False  # if True, never attempt network downloads (cached tiles only)
+
+    # Tessera tile geometry (global_0.1_degree_representation)
+    # Note: tile coordinates used by GeoTessera are tile CENTERS (e.g. 47.25 covers 47.20..47.30).
+    tile_size_deg: float = 0.1
+
+    # Embedding quantization
+    # Cached tiles on disk are typically stored as int8 with a per-pixel scale (float32)
+    # in a sibling file: grid_<lon>_<lat>_scales.npy. If enabled, we will dequantize to
+    # float32 as: embedding_f32 = embedding_int8.astype(float32) * scales[..., None]
+    dequantize_embeddings: bool = True
+
     # Visualisation
     n_samples: int = 100000
     percentiles: list[float] = field(default_factory=lambda: [2, 98])
