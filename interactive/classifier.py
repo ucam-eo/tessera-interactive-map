@@ -9,6 +9,9 @@ from rasterio import Affine, transform
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 from tqdm import tqdm
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 
 
 def format_number(num: int) -> str:
@@ -29,6 +32,144 @@ def format_number(num: int) -> str:
         return f"{num / 1_000:.0f}k"
     else:
         return str(num)
+
+
+class MLPClassifier(nn.Module):
+    """
+    A simple 2-layer MLP classifier with ReLU activation.
+    """
+    
+    def __init__(self, input_dim: int, num_classes: int, hidden_dim: Optional[int] = None):
+        """
+        Initialize MLP classifier.
+        
+        Args:
+            input_dim (int): Number of input features
+            num_classes (int): Number of output classes
+            hidden_dim (int, optional): Hidden layer dimension. Defaults to input_dim * 2.
+        """
+        super(MLPClassifier, self).__init__()
+        if hidden_dim is None:
+            hidden_dim = input_dim * 2
+        
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(hidden_dim, num_classes)
+        
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x
+
+
+class MLPWrapper:
+    """
+    Wrapper class to make MLP compatible with sklearn-like interface.
+    """
+    
+    def __init__(self, input_dim: int, num_classes: int, hidden_dim: Optional[int] = None,
+                 batch_size: int = 32, epochs: int = 50, learning_rate: float = 0.001,
+                 device: Optional[str] = None):
+        """
+        Initialize MLP wrapper.
+        
+        Args:
+            input_dim (int): Number of input features
+            num_classes (int): Number of output classes
+            hidden_dim (int, optional): Hidden layer dimension
+            batch_size (int): Training batch size
+            epochs (int): Number of training epochs
+            learning_rate (float): Learning rate for optimizer
+            device (str, optional): Device to use ('cpu' or 'cuda'). Auto-detected if None.
+        """
+        self.input_dim = input_dim
+        self.num_classes = num_classes
+        self.hidden_dim = hidden_dim
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.learning_rate = learning_rate
+        
+        if device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device(device)
+        
+        # Create MLP model - MLPClassifier is defined in the same module
+        # Use direct reference to avoid autoreload issues
+        self.model = MLPClassifier(input_dim, num_classes, hidden_dim).to(self.device)
+        self.is_fitted = False
+        
+    def fit(self, X: np.ndarray, y: np.ndarray):
+        """
+        Train the MLP model.
+        
+        Args:
+            X (np.ndarray): Training features of shape (n_samples, n_features)
+            y (np.ndarray): Training labels of shape (n_samples,)
+        """
+        # Convert to tensors
+        X_tensor = torch.FloatTensor(X).to(self.device)
+        y_tensor = torch.LongTensor(y).to(self.device)
+        
+        # Create dataset and dataloader
+        dataset = torch.utils.data.TensorDataset(X_tensor, y_tensor)
+        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+        
+        # Loss and optimizer
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate)
+        
+        # Training loop
+        self.model.train()
+        for epoch in range(self.epochs):
+            total_loss = 0.0
+            for batch_X, batch_y in dataloader:
+                optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            
+            if (epoch + 1) % 10 == 0:
+                avg_loss = total_loss / len(dataloader)
+                print(f"Epoch {epoch + 1}/{self.epochs}, Average Loss: {avg_loss:.4f}")
+        
+        self.is_fitted = True
+        
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict class probabilities.
+        
+        Args:
+            X (np.ndarray): Input features of shape (n_samples, n_features)
+            
+        Returns:
+            np.ndarray: Class probabilities of shape (n_samples, n_classes)
+        """
+        if not self.is_fitted:
+            raise ValueError("Model must be fitted before prediction")
+        
+        self.model.eval()
+        with torch.no_grad():
+            X_tensor = torch.FloatTensor(X).to(self.device)
+            outputs = self.model(X_tensor)
+            probabilities = torch.softmax(outputs, dim=1)
+            return probabilities.cpu().numpy().astype(np.float32)
+    
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict class labels.
+        
+        Args:
+            X (np.ndarray): Input features of shape (n_samples, n_features)
+            
+        Returns:
+            np.ndarray: Predicted class labels of shape (n_samples,)
+        """
+        probabilities = self.predict_proba(X)
+        return np.argmax(probabilities, axis=1)
 
 
 class EmbeddingClassifier:
@@ -54,6 +195,8 @@ class EmbeddingClassifier:
         self.model_name = None
         self.class_index_map = {}
         self.unique_class_names = []
+        self.last_classification_result = None
+        self.last_probabilities = None
 
     def prepare_training_data(
         self, training_points: list[tuple[tuple[float, float], str]]
@@ -120,6 +263,21 @@ class EmbeddingClassifier:
             n_estimators = model_params.get('n_estimators', 100)
             print(f"Training Random Forest with {n_estimators} estimators...")
             self.model = RandomForestClassifier(n_estimators=n_estimators, n_jobs=-1, random_state=42)
+        
+        elif model_name == 'mlp':
+            hidden_dim = model_params.get('hidden_dim', None)
+            batch_size = model_params.get('batch_size', 32)
+            epochs = model_params.get('epochs', 50)
+            learning_rate = model_params.get('learning_rate', 0.001)
+            print(f"Training MLP classifier (hidden_dim={hidden_dim}, epochs={epochs})...")
+            self.model = MLPWrapper(
+                input_dim=X_train.shape[1],
+                num_classes=len(self.unique_class_names),
+                hidden_dim=hidden_dim,
+                batch_size=batch_size,
+                epochs=epochs,
+                learning_rate=learning_rate
+            )
             
         else:
             raise ValueError(f"Unknown model: {model_name}")
@@ -130,7 +288,7 @@ class EmbeddingClassifier:
 
     def classify_mosaic(
         self, batch_size: int = 15000, progress_callback: Optional[Callable] = None
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """
         Classify the entire mosaic using the trained model.
 
@@ -139,9 +297,10 @@ class EmbeddingClassifier:
             progress_callback (Callable): Optional callback function for progress updates
 
         Returns:
-            tuple[numpy.ndarray, numpy.ndarray]: 
-                - classification_result of shape (height, width)
+            tuple[numpy.ndarray, numpy.ndarray, Optional[numpy.ndarray]]: 
+                - classification_result of shape (height, width) with values 1-N
                 - confidence_map of shape (height, width)
+                - probabilities of shape (height, width, num_classes) or None if not available
         """
         if self.model is None:
             raise ValueError("Model must be trained before classification")
@@ -177,10 +336,20 @@ class EmbeddingClassifier:
         # Reshape back to image dimensions
         classification_result = classification_result.reshape(self.mosaic_height, self.mosaic_width)
         confidence_map = confidence_map.reshape(self.mosaic_height, self.mosaic_width)
+        
+        # Reshape probabilities to (H, W, N)
+        probabilities = all_probabilities.reshape(self.mosaic_height, self.mosaic_width, len(self.unique_class_names))
+        
+        # Convert classification_result to 1-N (instead of 0-(N-1))
+        classification_result = classification_result + 1
+        
+        # Store results for export
+        self.last_classification_result = classification_result
+        self.last_probabilities = probabilities
 
         # clean up variable to save memory
         del all_pixels, all_probabilities
-        return classification_result, confidence_map
+        return classification_result, confidence_map, probabilities
 
     def create_visualization(
         self,
@@ -194,19 +363,23 @@ class EmbeddingClassifier:
         Create visualization colored by class of results.
 
         Args:
+            classification_result (np.ndarray): 2D array with values 1-N (not 0-(N-1))
             confidence_map (np.ndarray): 2D array of model confidence scores (0.0 to 1.0)
             mode (str): standard, confidence_opacity, or threshold
             threshold (float): Confidence threshold for the threshold mode
         Returns:
             str: Base64-encoded PNG image data URL
         """
+        # Convert from 1-N to 0-(N-1) for visualization
+        classification_result_viz = classification_result - 1
+        
         # create colormap from the color mapping
         color_list = [
             color_map.get(name, "#888888") for name in self.unique_class_names
         ]
         cmap = mcolors.ListedColormap(color_list)
         norm = mcolors.Normalize(vmin=0, vmax=len(self.unique_class_names) - 1)
-        colored_result_rgb = cmap(norm(classification_result))[:, :, :3]
+        colored_result_rgb = cmap(norm(classification_result_viz))[:, :, :3]
 
         if mode == 'confidence_opacity' and confidence_map is not None:
             # Use confidence as the alpha channel. High confidence = opaque.
@@ -269,7 +442,7 @@ class EmbeddingClassifier:
         Get statistics about the classification results.
 
         Args:
-            classification_result (np.ndarray): 2D array of classification labels
+            classification_result (np.ndarray): 2D array of classification labels with values 1-N
 
         Returns:
             dict: Statistics including class counts and percentages
@@ -279,8 +452,11 @@ class EmbeddingClassifier:
 
         stats = {}
         for label, count in zip(unique_labels, counts):
-            class_name = self.unique_class_names[label]
-            percentage = (count / total_pixels) * 100
-            stats[class_name] = {"pixels": int(count), "percentage": float(percentage)}
+            # Convert from 1-N to 0-(N-1) for indexing
+            class_idx = int(label) - 1
+            if 0 <= class_idx < len(self.unique_class_names):
+                class_name = self.unique_class_names[class_idx]
+                percentage = (count / total_pixels) * 100
+                stats[class_name] = {"pixels": int(count), "percentage": float(percentage)}
 
         return stats

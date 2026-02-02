@@ -7,3 +7,6 @@ embedding/
 __pycache__
 *.tif
 *.json
+*.csv
+*.tiff
+*.npy

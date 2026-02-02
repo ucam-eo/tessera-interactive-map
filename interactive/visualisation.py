@@ -45,8 +45,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-from .classifier import EmbeddingClassifier
+from .classifier import EmbeddingClassifier, MLPClassifier, MLPWrapper
 from .utils import check_bbox_valid
+from .config import config
 
 
 class InteractiveMappingTool:
@@ -68,6 +69,8 @@ class InteractiveMappingTool:
         self.tab10_cmap = plt.colormaps.get_cmap("tab10")
         self.classification_layer = None
         self.sentinel_layer = None
+        self.last_classification_result = None
+        self.last_probabilities = None
 
         # arguments
         self.min_lat = min_lat
@@ -153,11 +156,15 @@ class InteractiveMappingTool:
             description="Clear Classification", disabled=True
         )
         self.model_selector = Dropdown(
-            options=['kNN', 'Random Forest'],
+            options=['kNN', 'Random Forest', 'MLP'],
             value='kNN',
             description='Model:',
             disabled=False,
         )
+        self.export_filename_text = Text(
+            value="classification_result", placeholder="Enter filename (without extension)", description="Export Filename:"
+        )
+        self.export_button = Button(description="Export Classification", button_style="info", disabled=True)
         self.filename_text = Text(
             value="labels.json", placeholder="Enter filename", description="Filename:"
         )
@@ -513,6 +520,9 @@ class InteractiveMappingTool:
             self.m.remove_layer(self.classification_layer)
             self.classification_layer = None
             self.clear_classification_button.disabled = True
+            self.export_button.disabled = True
+            self.last_classification_result = None
+            self.last_probabilities = None
             with self.output_log:
                 self.output_log.clear_output()
                 print("Classification layer removed.")
@@ -567,7 +577,8 @@ class InteractiveMappingTool:
                 selected_model_display = self.model_selector.value
                 model_name_map = {
                     'kNN': 'knn',
-                    'Random Forest': 'rf'
+                    'Random Forest': 'rf',
+                    'MLP': 'mlp'
                 }
                 model_key = model_name_map.get(selected_model_display)
                 
@@ -581,9 +592,13 @@ class InteractiveMappingTool:
 
                 # classify the entire mosaic
                 print("\nClassifying pixels...")
-                classification_result, confidence_map = self.embedding_classifier.classify_mosaic(
+                classification_result, confidence_map, probabilities = self.embedding_classifier.classify_mosaic(
                     batch_size=15000
                 )
+                
+                # Store results for export
+                self.last_classification_result = classification_result
+                self.last_probabilities = probabilities
 
                 # Get visualization settings from the UI
                 vis_mode = self.vis_mode_selector.value
@@ -624,8 +639,9 @@ class InteractiveMappingTool:
                 )
                 self.m.add(self.classification_layer)
 
-                # enable the clear button
+                # enable the clear button and export button
                 self.clear_classification_button.disabled = False
+                self.export_button.disabled = False
 
                 # print completion message with statistics
                 stats = self.embedding_classifier.get_classification_stats(
@@ -678,6 +694,133 @@ class InteractiveMappingTool:
             with self.output_log:
                 self.output_log.clear_output()
                 print(f"Error saving file: {e}")
+
+    def on_export_button_clicked(self, b: dict) -> None:
+        """Export classification results to files.
+
+        Args:
+            b: Button click event object.
+        """
+        if self.last_classification_result is None:
+            with self.output_log:
+                self.output_log.clear_output()
+                print("Error: No classification results to export. Please run classification first.")
+            return
+        
+        base_filename = self.export_filename_text.value.strip()
+        if not base_filename:
+            with self.output_log:
+                self.output_log.clear_output()
+                print("Error: Please provide a filename for export.")
+            return
+        
+        try:
+            import csv
+            from pathlib import Path
+            
+            # Check and log spatial shapes against embedding mosaic
+            emb_h, emb_w, _ = self.embedding_mosaic.shape
+            cls_h, cls_w = self.last_classification_result.shape
+            print(f"Embedding mosaic spatial shape (H, W): ({emb_h}, {emb_w})")
+            print(f"Classification labels spatial shape (H, W): ({cls_h}, {cls_w})")
+            
+            if (cls_h, cls_w) != (emb_h, emb_w):
+                print(
+                    "WARNING: Classification label shape does not match embedding mosaic shape. "
+                    "Labels will still be saved, but please double-check alignment."
+                )
+            
+            if self.last_probabilities is not None:
+                prob_h, prob_w, prob_c = self.last_probabilities.shape
+                print(
+                    f"Classification probabilities shape (H, W, C): "
+                    f"({prob_h}, {prob_w}, {prob_c})"
+                )
+            
+            # 1. Export classification labels (H, W) with values 1-N
+            labels_fp = Path(f"{base_filename}_labels.npy")
+            np.save(labels_fp, self.last_classification_result)
+            print(f"Saved classification labels to {labels_fp}")
+
+            # 1b. Export classification labels as GeoTIFF with spatial metadata
+            labels_tiff_fp = Path("/scratch/zf281/tessera-interactive-map/classification_result_labels.tiff")
+            labels_profile = {
+                "driver": "GTiff",
+                "height": cls_h,
+                "width": cls_w,
+                "count": 1,
+                "dtype": str(self.last_classification_result.dtype),
+                # Use the configured target CRS from the global config instance
+                "crs": config.target_crs,
+                "transform": self.mosaic_transform,
+                "tiled": True,
+                "compress": "deflate",
+                # Use a safe predictor for current libtiff version
+                "predictor": 1,
+                "BIGTIFF": "IF_SAFER",
+            }
+            with rasterio.open(labels_tiff_fp, "w", **labels_profile) as dst:
+                dst.write(self.last_classification_result, 1)
+            print(f"Saved classification labels GeoTIFF to {labels_tiff_fp}")
+            
+            # 2. Export CSV mapping label numbers to class names
+            csv_fp = Path(f"{base_filename}_label_mapping.csv")
+            with open(csv_fp, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['Label', 'Class Name'])
+                # Map label numbers (1-N) to class names
+                for i, class_name in enumerate(self.embedding_classifier.unique_class_names):
+                    writer.writerow([i + 1, class_name])
+            print(f"Saved label mapping to {csv_fp}")
+            
+            # 3. Export probabilities if available (H, W, N)
+            if self.last_probabilities is not None:
+                probs_fp = Path(f"{base_filename}_probabilities.npy")
+                np.save(probs_fp, self.last_probabilities)
+                print(f"Saved class probabilities to {probs_fp}")
+                
+                # 3b. Export probabilities as GeoTIFF with spatial metadata
+                # Shape is (H, W, N), need to transpose to (N, H, W) for GeoTIFF
+                probs_tiff_fp = Path("/scratch/zf281/tessera-interactive-map/classification_result_probabilities.tiff")
+                prob_h, prob_w, prob_n = self.last_probabilities.shape
+                probs_profile = {
+                    "driver": "GTiff",
+                    "height": prob_h,
+                    "width": prob_w,
+                    "count": prob_n,  # Number of bands = number of classes
+                    "dtype": str(self.last_probabilities.dtype),
+                    "crs": config.target_crs,
+                    "transform": self.mosaic_transform,
+                    "tiled": True,
+                    "compress": "deflate",
+                    "predictor": 1,
+                    "BIGTIFF": "IF_SAFER",
+                }
+                with rasterio.open(probs_tiff_fp, "w", **probs_profile) as dst:
+                    # Transpose from (H, W, N) to (N, H, W) for writing
+                    probs_transposed = np.transpose(self.last_probabilities, (2, 0, 1))
+                    dst.write(probs_transposed)
+                print(f"Saved class probabilities GeoTIFF to {probs_tiff_fp}")
+                print(f"  GeoTIFF shape: {prob_n} bands × {prob_h} × {prob_w} (bands × height × width)")
+            else:
+                print("Note: Probability information not available for this model.")
+            
+            with self.output_log:
+                self.output_log.clear_output()
+                print(f"Successfully exported classification results:")
+                print(f"  - Labels: {labels_fp}")
+                print(f"  - Labels GeoTIFF: {labels_tiff_fp}")
+                print(f"  - Label mapping: {csv_fp}")
+                if self.last_probabilities is not None:
+                    print(f"  - Probabilities: {probs_fp}")
+                    print(f"  - Probabilities GeoTIFF: {probs_tiff_fp}")
+                    
+        except Exception as e:
+            with self.output_log:
+                self.output_log.clear_output()
+                print(f"Error exporting classification results: {e}")
+                import traceback
+                traceback.print_exc()
 
     def on_load_button_clicked(self, b: dict) -> None:
         """Load training points and class colors from a file.
@@ -758,6 +901,7 @@ class InteractiveMappingTool:
         self.save_button.on_click(self.on_save_button_clicked)
         self.load_button.on_click(self.on_load_button_clicked)
         self.classify_button.on_click(self.on_classify_button_clicked)
+        self.export_button.on_click(self.on_export_button_clicked)
         def on_vis_mode_change(change):
             if change.new == 'Uncertainty (Threshold)':
                 self.confidence_slider.layout.display = 'flex'
@@ -824,7 +968,9 @@ class InteractiveMappingTool:
 
         # File controls for saving/loading
         file_controls = HBox([self.filename_text, self.save_button, self.load_button])
-        self.ui = VBox([top_bar, self.m, bottom_controls_row, file_controls, self.output_log])
+        # Export controls
+        export_controls = HBox([self.export_filename_text, self.export_button])
+        self.ui = VBox([top_bar, self.m, bottom_controls_row, file_controls, export_controls, self.output_log])
 
     def display(self) -> None:
         """Display the interactive mapping tool."""
