@@ -2007,10 +2007,10 @@ class InteractiveHeightMappingTool:
             self.test_roi_layers.append(layer)
 
     def _init_default_rois(self) -> None:
-        # Train ROI: left upper (47.167811,7.273987), right lower (47.163849,7.286448)
-        self._set_roi_from_bounds("train", 47.163849, 47.167811, 7.273987, 7.286448)
-        # Test ROI: left upper (47.171467,7.285832), right lower (47.169003,7.300424)
-        self._set_roi_from_bounds("test", 47.169003, 47.171467, 7.285832, 7.300424)
+        rows, cols = np.nonzero(self._valid_gt_mask())
+        lon, lat = self.mosaic_transform * ((cols.min() + cols.max()) / 2, (rows.min() + rows.max()) / 2)
+        self._set_roi_from_bounds("train", lat - 0.004, lat, lon - 0.006, lon + 0.006)
+        self._set_roi_from_bounds("test", lat + 0.001, lat + 0.0035, lon + 0.006, lon + 0.02)
         self._recompute_patches()
 
     def _on_draw(self, target: DrawControl, action: str, geo_json: dict, **kwargs) -> None:
@@ -2367,7 +2367,6 @@ class InteractiveHeightMappingTool:
     # Overlays + export
     # -----------------
     def _array_to_rgba_data_url(self, arr: np.ndarray, *, cmap: str, vmin: float, vmax: float, nodata: float) -> str:
-        from matplotlib import cm
         data = arr.astype(np.float32, copy=False)
         valid = np.isfinite(data) & (data != nodata)
         rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.float32)
@@ -2376,7 +2375,7 @@ class InteractiveHeightMappingTool:
             d[~valid] = vmin
             d = np.clip(d, vmin, vmax)
             norm = (d - vmin) / (vmax - vmin + 1e-12)
-            rgba[:, :, :] = cm.get_cmap(cmap)(norm)
+            rgba[:, :, :] = plt.colormaps[cmap](norm)
             rgba[:, :, 3] = valid.astype(np.float32)
         buffer = io.BytesIO()
         plt.imsave(buffer, rgba, format="png")

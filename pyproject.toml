@@ -10,7 +10,7 @@ authors = [
     { name="Your Name", email="your.email@example.com" }
 ]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -27,6 +27,8 @@ dependencies = [
     "rasterio",
     "geotessera>=0.5.0",
     "pyyaml",
+    "tqdm",
+    "torch",
 ]
 
 [project.urls]
